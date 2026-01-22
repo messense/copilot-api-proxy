@@ -22,7 +22,8 @@ A reverse proxy for the GitHub Copilot API that exposes OpenAI-compatible endpoi
 ## Features
 
 - OpenAI-compatible `/v1/*` endpoints
-- Pure passthrough of request/response bodies (no schema translation).
+- Pure passthrough of request/response bodies (no schema translation) for OpenAI endpoints.
+- Claude Code `/v1/messages` compatibility via request/response conversion.
 - GitHub OAuth device flow for one-time authentication.
 - Automatic Copilot token refresh in the background.
 - Streaming responses are supported (SSE).
@@ -75,11 +76,21 @@ curl http://localhost:9876/v1/models
 curl -X POST http://localhost:9876/v1/responses \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-5", "input": "Hello"}'
+
+# Claude Messages (converted to OpenAI chat completions)
+curl -X POST http://localhost:9876/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-3-5-sonnet-20241022", "max_tokens": 128, "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ## Configuration
 
 - `GITHUB_TOKEN` (optional): overrides the token file.
+- `ANTHROPIC_API_KEY` (optional): if set, `/v1/messages` requires clients to supply a matching key via `x-api-key` or `Authorization: Bearer`.
+- `BIG_MODEL`, `MIDDLE_MODEL`, `SMALL_MODEL` (optional): map Claude opus/sonnet/haiku to Copilot models.
+  - Defaults: `claude-opus-4.5`, `claude-sonnet-4.5`, `claude-haiku-4.5`
+- `MAX_TOKENS_LIMIT`, `MIN_TOKENS_LIMIT` (optional): clamp Claude `max_tokens` for forwarded requests.
+  - Defaults: `4096`, `100`
 - `RUST_LOG`: control logging verbosity, for example:
 
 ```bash

@@ -21,6 +21,8 @@ enum Commands {
     Server {
         #[arg(short, long, default_value = "9876")]
         port: u16,
+        #[arg(long, default_value = "info")]
+        log_level: String,
     },
 }
 
@@ -32,7 +34,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Auth => run_auth().await,
-        Commands::Server { port } => run_server(port).await,
+        Commands::Server { port, log_level } => run_server(port, &log_level).await,
     }
 }
 
@@ -52,8 +54,9 @@ async fn run_auth() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(port: u16) -> Result<()> {
-    init_tracing("copilot_api_proxy=info,tower_http=debug");
+async fn run_server(port: u16, log_level: &str) -> Result<()> {
+    let filter = format!("copilot_api_proxy={},tower_http={}", log_level, log_level);
+    init_tracing(&filter);
 
     let state = server::AppState::new().await?;
     let app = server::create_router(state);

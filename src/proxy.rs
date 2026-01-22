@@ -4,7 +4,7 @@ use crate::auth::TokenManager;
 use crate::error::Error;
 use axum::body::{Body, Bytes};
 use axum::response::Response;
-use futures::StreamExt;
+use futures::TryStreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use std::sync::Arc;
@@ -86,9 +86,7 @@ pub async fn forward_response(resp: reqwest::Response) -> Result<Response, Error
     }
 
     let body = if is_stream {
-        let stream = resp.bytes_stream().map(|r| {
-            r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        });
+        let stream = resp.bytes_stream().map_err(std::io::Error::other);
         Body::from_stream(stream)
     } else {
         Body::from(resp.bytes().await?)

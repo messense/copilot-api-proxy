@@ -3,6 +3,10 @@
 use crate::auth::TokenManager;
 use crate::error::Error;
 use crate::proxy::{forward_response, ProxyClient};
+use crate::claude::{
+    convert_claude_request, convert_openai_response, error_from_proxy,
+    validate_anthropic_headers,
+};
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, Method};
@@ -44,6 +48,39 @@ async fn proxy_handler(
     let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
     let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
 
-    let resp = state.proxy.forward(&format!("/{}{}", path, query), method, body, content_type).await?;
+    if path == "messages" {
+        if method != Method::POST {
+            return Ok(error_from_proxy(Error::InvalidRequest(
+                "Only POST is supported for /v1/messages".to_string(),
+            )));
+        }
+
+        if let Some(resp) = validate_anthropic_headers(&headers) {
+            return Ok(resp);
+        }
+
+        let converted = match convert_claude_request(body) {
+            Ok(converted) => converted,
+            Err(err) => return Ok(error_from_proxy(err)),
+        };
+        let resp = match state
+            .proxy
+            .forward(&format!("/chat/completions{}", query), method, converted.body, Some("application/json"))
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => return Ok(error_from_proxy(err)),
+        };
+        let response = match convert_openai_response(resp, converted.model, converted.stream).await {
+            Ok(response) => response,
+            Err(err) => return Ok(error_from_proxy(err)),
+        };
+        return Ok(response);
+    }
+
+    let resp = state
+        .proxy
+        .forward(&format!("/{}{}", path, query), method, body, content_type)
+        .await?;
     forward_response(resp).await
 }
