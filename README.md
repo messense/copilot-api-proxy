@@ -1,6 +1,6 @@
 # copilot-api-proxy
 
-A reverse proxy for the GitHub Copilot API that exposes OpenAI-compatible endpoints. It forwards requests unchanged and injects the required Copilot authentication headers.
+A reverse proxy for the GitHub Copilot API that exposes OpenAI and Anthropic compatible endpoints. It forwards requests unchanged and injects the required Copilot authentication headers.
 
 > [!WARNING]
 > This is a reverse-engineered proxy of GitHub Copilot API. It is not supported by GitHub, and may break unexpectedly. Use at your own risk.

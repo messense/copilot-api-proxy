@@ -47,10 +47,10 @@ async fn get_device_code() -> Result<DeviceCodeResponse, Error> {
 
 async fn poll_for_token(device_code: &str, interval: u64) -> Result<String, Error> {
     let client = reqwest::Client::new();
-    let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(interval));
+    let mut current_interval = interval;
 
     loop {
-        poll_interval.tick().await;
+        tokio::time::sleep(std::time::Duration::from_secs(current_interval)).await;
 
         #[derive(Deserialize)]
         struct Resp {
@@ -78,6 +78,11 @@ async fn poll_for_token(device_code: &str, interval: u64) -> Result<String, Erro
 
         match resp.error.as_deref() {
             Some("authorization_pending") => continue,
+            Some("slow_down") => {
+                // GitHub wants us to poll less frequently - increase interval by 5 seconds
+                current_interval += 5;
+                continue;
+            }
             Some(e) => return Err(Error::Auth(format!("Authorization failed: {}", e))),
             None => continue,
         }

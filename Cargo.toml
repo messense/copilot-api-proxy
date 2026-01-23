@@ -3,6 +3,7 @@ name = "copilot-api-proxy"
 version = "0.1.0"
 edition = "2024"
 description = "A reverse proxy server for GitHub Copilot API with OpenAI-compatible endpoints"
+license = "MIT"
 
 [dependencies]
 # Async runtime
