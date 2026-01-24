@@ -45,6 +45,7 @@ impl ProxyClient {
         body: Bytes,
         content_type: Option<&str>,
         initiator: Option<&str>,
+        is_vision: bool,
     ) -> Result<reqwest::Response, Error> {
         let token = self.token_manager.get_token().await?;
 
@@ -52,7 +53,7 @@ impl ProxyClient {
             .client
             .request(method, format!("{}{}", COPILOT_API_BASE, path))
             .bearer_auth(&token)
-            .headers(copilot_headers(initiator));
+            .headers(copilot_headers(initiator, is_vision));
 
         if let Some(ct) = content_type {
             req = req.header("Content-Type", ct);
@@ -62,7 +63,7 @@ impl ProxyClient {
     }
 }
 
-fn copilot_headers(initiator: Option<&str>) -> HeaderMap {
+fn copilot_headers(initiator: Option<&str>, is_vision: bool) -> HeaderMap {
     let mut h = HeaderMap::new();
     h.insert("editor-version", HeaderValue::from_static("vscode/1.98.1"));
     h.insert(
@@ -95,6 +96,13 @@ fn copilot_headers(initiator: Option<&str>) -> HeaderMap {
             "user"
         }),
     );
+
+    if is_vision {
+        h.insert(
+            "Copilot-Vision-Request",
+            HeaderValue::from_static("true"),
+        );
+    }
 
     h
 }

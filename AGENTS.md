@@ -89,7 +89,7 @@ Generic Proxy Handler (single handler for ALL endpoints)
     ↓
 ProxyClient (injects Copilot auth headers)
     ↓
-Initiator inference (chat/responses only; sets `X-Initiator`)
+Request analysis (chat/responses only; sets `X-Initiator` and `Copilot-Vision-Request`)
     ↓
 TokenManager (background refresh)
     ↓

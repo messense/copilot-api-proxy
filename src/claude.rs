@@ -42,6 +42,7 @@ pub struct ClaudeConvertedRequest {
     pub stream: bool,
     pub body: Bytes,
     pub initiator: String, // "user" or "agent"
+    pub is_vision: bool,
 }
 
 pub fn validate_anthropic_headers(headers: &HeaderMap) -> Option<Response> {
@@ -84,6 +85,14 @@ pub fn convert_claude_request(body: Bytes) -> Result<ClaudeConvertedRequest, Err
         .ok_or_else(|| Error::InvalidRequest("Missing required field: messages".to_string()))?;
     let initiator = infer_initiator(messages);
 
+    // Check for image content in messages
+    let is_vision = messages.iter().any(|msg| {
+        msg.get("content")
+            .and_then(|c| c.as_array())
+            .map(|parts| parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some(CONTENT_IMAGE)))
+            .unwrap_or(false)
+    });
+
     let openai_body = convert_claude_value_to_openai(&value)?;
     let body_bytes = serde_json::to_vec(&openai_body)
         .map_err(|e| Error::InvalidRequest(format!("Failed to serialize OpenAI request: {e}")))?;
@@ -93,6 +102,7 @@ pub fn convert_claude_request(body: Bytes) -> Result<ClaudeConvertedRequest, Err
         stream,
         body: Bytes::from(body_bytes),
         initiator: initiator.to_string(),
+        is_vision,
     })
 }
 

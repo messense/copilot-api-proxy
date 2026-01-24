@@ -6,44 +6,77 @@
 
 use serde_json::Value;
 
+/// Result of analyzing a request body for initiator and vision detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestAnalysis {
+    pub initiator: &'static str,
+    pub is_vision: bool,
+}
+
 /// Infer the initiator from Claude/Anthropic format message history.
 /// Returns "agent" if any assistant/tool messages exist, "user" otherwise.
 pub fn infer_initiator_claude(messages: &[Value]) -> &'static str {
     infer_initiator_from_messages(messages, &["assistant", "tool"])
 }
 
-/// Infer the initiator from OpenAI chat completions format message history.
-/// Returns "agent" if any assistant/tool messages exist, "user" otherwise.
-pub fn infer_initiator_openai_chat_completions(body: &[u8]) -> &'static str {
+/// Analyze OpenAI chat completions request for initiator and vision.
+pub fn analyze_openai_chat_completions(body: &[u8]) -> RequestAnalysis {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return "user";
+        return RequestAnalysis {
+            initiator: "user",
+            is_vision: false,
+        };
     };
     let Some(messages) = value.get("messages").and_then(|v| v.as_array()) else {
-        return "user";
+        return RequestAnalysis {
+            initiator: "user",
+            is_vision: false,
+        };
     };
-    infer_initiator_from_messages(messages, &["assistant", "tool"])
+    let initiator = infer_initiator_from_messages(messages, &["assistant", "tool"]);
+    let is_vision = messages.iter().any(|msg| {
+        msg.get("content")
+            .and_then(|c| c.as_array())
+            .map(|parts| parts.iter().any(|p| p.get("type") == Some(&Value::String("image_url".to_string()))))
+            .unwrap_or(false)
+    });
+    RequestAnalysis { initiator, is_vision }
 }
 
-/// Infer the initiator from OpenAI responses API format.
-/// The responses API uses "input" field with items that can have roles.
-/// Returns "agent" if any assistant/tool items exist, "user" otherwise.
-pub fn infer_initiator_openai_responses(body: &[u8]) -> &'static str {
+/// Analyze OpenAI responses API request for initiator and vision.
+pub fn analyze_openai_responses(body: &[u8]) -> RequestAnalysis {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return "user";
+        return RequestAnalysis {
+            initiator: "user",
+            is_vision: false,
+        };
     };
-    // Responses API uses "input" which can be a string or array of items
     let Some(input) = value.get("input") else {
-        return "user";
+        return RequestAnalysis {
+            initiator: "user",
+            is_vision: false,
+        };
     };
-    // If input is a string, it's a simple user input
     if input.is_string() {
-        return "user";
+        return RequestAnalysis {
+            initiator: "user",
+            is_vision: false,
+        };
     }
-    // If input is an array, check for assistant/tool roles
     let Some(items) = input.as_array() else {
-        return "user";
+        return RequestAnalysis {
+            initiator: "user",
+            is_vision: false,
+        };
     };
-    infer_initiator_from_messages(items, &["assistant", "tool"])
+    let initiator = infer_initiator_from_messages(items, &["assistant", "tool"]);
+    let is_vision = items.iter().any(|item| {
+        item.get("content")
+            .and_then(|c| c.as_array())
+            .map(|parts| parts.iter().any(|p| p.get("type") == Some(&Value::String("input_image".to_string()))))
+            .unwrap_or(false)
+    });
+    RequestAnalysis { initiator, is_vision }
 }
 
 fn infer_initiator_from_messages(messages: &[Value], agent_roles: &[&str]) -> &'static str {
@@ -107,10 +140,9 @@ mod tests {
     #[test]
     fn test_openai_user_only() {
         let body = json!({"messages": [{"role": "user", "content": "Hello"}]});
-        assert_eq!(
-            infer_initiator_openai_chat_completions(body.to_string().as_bytes()),
-            "user"
-        );
+        let result = analyze_openai_chat_completions(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "user");
+        assert!(!result.is_vision);
     }
 
     #[test]
@@ -121,10 +153,9 @@ mod tests {
                 {"role": "assistant", "content": "Hi"}
             ]
         });
-        assert_eq!(
-            infer_initiator_openai_chat_completions(body.to_string().as_bytes()),
-            "agent"
-        );
+        let result = analyze_openai_chat_completions(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "agent");
+        assert!(!result.is_vision);
     }
 
     #[test]
@@ -135,33 +166,48 @@ mod tests {
                 {"role": "tool", "tool_call_id": "123", "content": "result"}
             ]
         });
-        assert_eq!(
-            infer_initiator_openai_chat_completions(body.to_string().as_bytes()),
-            "agent"
-        );
+        let result = analyze_openai_chat_completions(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "agent");
+        assert!(!result.is_vision);
     }
 
     #[test]
     fn test_openai_invalid_json() {
-        assert_eq!(infer_initiator_openai_chat_completions(b"not json"), "user");
+        let result = analyze_openai_chat_completions(b"not json");
+        assert_eq!(result.initiator, "user");
+        assert!(!result.is_vision);
     }
 
     #[test]
     fn test_openai_missing_messages() {
         let body = json!({"model": "gpt-4"});
-        assert_eq!(
-            infer_initiator_openai_chat_completions(body.to_string().as_bytes()),
-            "user"
-        );
+        let result = analyze_openai_chat_completions(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "user");
+        assert!(!result.is_vision);
+    }
+
+    #[test]
+    fn test_openai_with_vision() {
+        let body = json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What's in this image?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+                ]
+            }]
+        });
+        let result = analyze_openai_chat_completions(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "user");
+        assert!(result.is_vision);
     }
 
     #[test]
     fn test_responses_string_input() {
         let body = json!({"input": "Hello, world!"});
-        assert_eq!(
-            infer_initiator_openai_responses(body.to_string().as_bytes()),
-            "user"
-        );
+        let result = analyze_openai_responses(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "user");
+        assert!(!result.is_vision);
     }
 
     #[test]
@@ -169,10 +215,9 @@ mod tests {
         let body = json!({
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}]
         });
-        assert_eq!(
-            infer_initiator_openai_responses(body.to_string().as_bytes()),
-            "user"
-        );
+        let result = analyze_openai_responses(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "user");
+        assert!(!result.is_vision);
     }
 
     #[test]
@@ -183,10 +228,9 @@ mod tests {
                 {"role": "assistant", "content": [{"type": "output_text", "text": "Hi"}]}
             ]
         });
-        assert_eq!(
-            infer_initiator_openai_responses(body.to_string().as_bytes()),
-            "agent"
-        );
+        let result = analyze_openai_responses(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "agent");
+        assert!(!result.is_vision);
     }
 
     #[test]
@@ -197,23 +241,39 @@ mod tests {
                 {"role": "tool", "content": "result"}
             ]
         });
-        assert_eq!(
-            infer_initiator_openai_responses(body.to_string().as_bytes()),
-            "agent"
-        );
+        let result = analyze_openai_responses(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "agent");
+        assert!(!result.is_vision);
     }
 
     #[test]
     fn test_responses_invalid_json() {
-        assert_eq!(infer_initiator_openai_responses(b"not json"), "user");
+        let result = analyze_openai_responses(b"not json");
+        assert_eq!(result.initiator, "user");
+        assert!(!result.is_vision);
     }
 
     #[test]
     fn test_responses_missing_input() {
         let body = json!({"model": "gpt-4"});
-        assert_eq!(
-            infer_initiator_openai_responses(body.to_string().as_bytes()),
-            "user"
-        );
+        let result = analyze_openai_responses(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "user");
+        assert!(!result.is_vision);
+    }
+
+    #[test]
+    fn test_responses_with_vision() {
+        let body = json!({
+            "input": [{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "What's in this image?"},
+                    {"type": "input_image", "image_url": "https://example.com/image.png"}
+                ]
+            }]
+        });
+        let result = analyze_openai_responses(body.to_string().as_bytes());
+        assert_eq!(result.initiator, "user");
+        assert!(result.is_vision);
     }
 }

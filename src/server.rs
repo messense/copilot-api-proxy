@@ -5,7 +5,7 @@ use crate::claude::{
     convert_claude_request, convert_openai_response, error_from_proxy, validate_anthropic_headers,
 };
 use crate::error::Error;
-use crate::initiator::{infer_initiator_openai_chat_completions, infer_initiator_openai_responses};
+use crate::initiator::{analyze_openai_chat_completions, analyze_openai_responses, RequestAnalysis};
 use crate::proxy::{ProxyClient, forward_response};
 use axum::Router;
 use axum::body::Bytes;
@@ -15,16 +15,15 @@ use axum::response::Response;
 use axum::routing::any;
 use std::sync::Arc;
 
-/// Infer initiator from request body for sticky inference cost savings.
-/// Returns Some("agent") if conversation has assistant/tool messages,
-/// Some("user") for new conversations, or None for non-inferable requests.
-fn infer_initiator(path: &str, method: &Method, body: &[u8]) -> Option<&'static str> {
+/// Analyze request body for initiator and vision detection.
+/// Returns analysis for chat/responses endpoints, None for others.
+fn analyze_request(path: &str, method: &Method, body: &[u8]) -> Option<RequestAnalysis> {
     if method != Method::POST {
         return None;
     }
     match path {
-        "chat/completions" => Some(infer_initiator_openai_chat_completions(body)),
-        "responses" => Some(infer_initiator_openai_responses(body)),
+        "chat/completions" => Some(analyze_openai_chat_completions(body)),
+        "responses" => Some(analyze_openai_responses(body)),
         _ => None,
     }
 }
@@ -87,6 +86,7 @@ async fn proxy_handler(
                 converted.body,
                 Some("application/json"),
                 Some(&converted.initiator),
+                converted.is_vision,
             )
             .await
         {
@@ -101,8 +101,8 @@ async fn proxy_handler(
         return Ok(response);
     }
 
-    // Infer initiator from message/input history for sticky inference
-    let initiator = infer_initiator(&path, &method, &body);
+    // Analyze request for initiator and vision detection
+    let analysis = analyze_request(&path, &method, &body);
 
     let resp = state
         .proxy
@@ -111,7 +111,8 @@ async fn proxy_handler(
             method,
             body,
             content_type,
-            initiator,
+            analysis.map(|a| a.initiator),
+            analysis.map(|a| a.is_vision).unwrap_or(false),
         )
         .await?;
     forward_response(resp).await
