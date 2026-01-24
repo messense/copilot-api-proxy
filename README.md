@@ -21,78 +21,182 @@ A reverse proxy for the GitHub Copilot API that exposes OpenAI and Anthropic com
 
 ## Features
 
-- OpenAI-compatible `/v1/*` endpoints
-- Pure passthrough of request/response bodies (no schema translation) for OpenAI endpoints, except for minimal initiator inference on `/v1/chat/completions` and `/v1/responses` to set `X-Initiator`.
-- Claude Code `/v1/messages` compatibility via request/response conversion.
-- GitHub OAuth device flow for one-time authentication.
-- Automatic Copilot token refresh in the background.
-- Streaming responses are supported (SSE).
+- **OpenAI-compatible endpoints** — `/v1/chat/completions`, `/v1/responses`, `/v1/models`
+- **Anthropic-compatible endpoint** — `/v1/messages` with full request/response conversion
+- **Pure passthrough** — No schema translation for OpenAI endpoints (minimal initiator inference only)
+- **Streaming support** — Server-Sent Events (SSE) for both OpenAI and Anthropic formats
+- **Tool/function calling** — Full support for tool use in both API formats
+- **Vision support** — Image inputs are forwarded with proper Copilot headers
+- **GitHub OAuth device flow** — One-time browser-based authentication
+- **Automatic token refresh** — Copilot tokens are refreshed in the background
+- **System service** — Install as a daemon on macOS/Linux
 
 ## Requirements
 
-- A GitHub account with Copilot access
+- A GitHub account with an active Copilot subscription
 
-## Install & Build
+## Installation
 
-```bash
-cargo build
-```
-
-## Authenticate (one-time)
+### From source
 
 ```bash
-cargo run -- auth
+cargo build --release
 ```
 
-This stores a GitHub token at `~/.local/share/copilot-api-proxy/github_token`.
+The binary will be at `target/release/copilot-api-proxy`.
 
-## Run the Proxy
+## Quick Start
+
+### 1. Authenticate (one-time)
+
+```bash
+copilot-api-proxy auth
+```
+
+This opens a browser for GitHub OAuth and stores the token at `~/.local/share/copilot-api-proxy/github_token`.
+
+### 2. Start the proxy
 
 ```bash
 # Default port: 9876
-cargo run -- server
+copilot-api-proxy server
 
 # Custom port
-cargo run -- server --port 8080
+copilot-api-proxy server --port 8080
+
+# With debug logging
+copilot-api-proxy server --log-level debug
 ```
+
+### 3. Use the API
+
+Point your OpenAI or Anthropic client to `http://localhost:9876`.
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | OpenAI chat completions |
+| `/v1/responses` | POST | OpenAI responses API (gpt-5 only) |
+| `/v1/models` | GET | List available models |
+| `/v1/messages` | POST | Anthropic messages API (converted to OpenAI) |
+| `/health` | GET | Health check |
 
 ## Usage Examples
 
+### OpenAI Chat Completions
+
 ```bash
-# Chat completions
 curl -X POST http://localhost:9876/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4o-mini-2024-07-18", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{
+    "model": "gpt-4o-mini-2024-07-18",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
 
-# Streaming
+### Streaming Response
+
+```bash
 curl -X POST http://localhost:9876/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4o-mini-2024-07-18", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
+  -d '{
+    "model": "gpt-4o-mini-2024-07-18",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": true
+  }'
+```
 
-# Models
-curl http://localhost:9876/v1/models
+### OpenAI Responses API
 
-# Responses (gpt-5 only)
+```bash
 curl -X POST http://localhost:9876/v1/responses \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-5", "input": "Hello"}'
+```
 
-# Claude Messages (converted to OpenAI chat completions)
+### Anthropic Messages API
+
+```bash
 curl -X POST http://localhost:9876/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model": "claude-3-5-sonnet-20241022", "max_tokens": 128, "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+### List Models
+
+```bash
+curl http://localhost:9876/v1/models
+```
+
+## System Service
+
+Install as a system daemon to run automatically on boot:
+
+```bash
+# Install the service (default port: 9876)
+copilot-api-proxy service install
+
+# Install with custom port
+copilot-api-proxy service install --port 8080
+
+# Uninstall the service
+copilot-api-proxy service uninstall
 ```
 
 ## Configuration
 
-- `GITHUB_TOKEN` (optional): overrides the token file.
-- `ANTHROPIC_API_KEY` (optional): if set, `/v1/messages` requires clients to supply a matching key via `x-api-key` or `Authorization: Bearer`.
-- `BIG_MODEL`, `MIDDLE_MODEL`, `SMALL_MODEL` (optional): map Claude opus/sonnet/haiku to Copilot models.
-  - Defaults: `claude-opus-4.5`, `claude-sonnet-4.5`, `claude-haiku-4.5`
-- `MAX_TOKENS_LIMIT`, `MIN_TOKENS_LIMIT` (optional): clamp Claude `max_tokens` for forwarded requests.
-  - Defaults: `4096`, `100`
-- `RUST_LOG`: control logging verbosity, for example:
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GITHUB_TOKEN` | Override the stored GitHub token | Token file |
+| `ANTHROPIC_API_KEY` | Require API key for `/v1/messages` | None (no auth) |
+| `BIG_MODEL` | Model for Claude opus requests | `claude-opus-4.5` |
+| `MIDDLE_MODEL` | Model for Claude sonnet requests | `claude-sonnet-4.5` |
+| `SMALL_MODEL` | Model for Claude haiku requests | `claude-haiku-4.5` |
+| `MAX_TOKENS_LIMIT` | Maximum `max_tokens` for Claude requests | `16384` |
+| `MIN_TOKENS_LIMIT` | Minimum `max_tokens` for Claude requests | `100` |
+| `RUST_LOG` | Logging verbosity | `info` |
+
+### Logging
 
 ```bash
-RUST_LOG=copilot_api_proxy=debug,tower_http=debug cargo run -- server
+# Debug logging for the proxy and HTTP layer
+RUST_LOG=copilot_api_proxy=debug,tower_http=debug copilot-api-proxy server
+
+# Trace logging for maximum verbosity
+RUST_LOG=trace copilot-api-proxy server
 ```
+
+### API Key Authentication
+
+To require authentication for the Anthropic-compatible endpoint:
+
+```bash
+ANTHROPIC_API_KEY=your-secret-key copilot-api-proxy server
+```
+
+Clients must then provide the key via `x-api-key` header or `Authorization: Bearer` header.
+
+## How It Works
+
+1. **Authentication**: Uses GitHub's OAuth device flow to obtain a user token
+2. **Token Exchange**: Exchanges the GitHub token for a Copilot API token
+3. **Auto-refresh**: Background task refreshes the Copilot token before expiry
+4. **Proxying**: Forwards requests to `api.individual.githubcopilot.com` with proper headers
+5. **Conversion**: For `/v1/messages`, converts between Anthropic and OpenAI formats
+
+### X-Initiator Header
+
+The proxy infers whether a request is user-initiated or agent-initiated based on the message history:
+- **User-initiated**: Consumes premium request quota
+- **Agent-initiated**: Uses standard quota
+
+## License
+
+MIT
