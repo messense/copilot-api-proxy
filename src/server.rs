@@ -5,7 +5,9 @@ use crate::claude::{
     convert_claude_request, convert_openai_response, error_from_proxy, validate_anthropic_headers,
 };
 use crate::error::Error;
-use crate::initiator::{analyze_openai_chat_completions, analyze_openai_responses, RequestAnalysis};
+use crate::initiator::{
+    RequestAnalysis, analyze_openai_chat_completions, analyze_openai_responses,
+};
 use crate::proxy::{ProxyClient, forward_response};
 use axum::Router;
 use axum::body::Bytes;

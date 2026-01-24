@@ -14,8 +14,8 @@ axum = { version = "0.8" }
 tower = { version = "0.5", features = ["timeout"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "limit"] }
 
-# HTTP client (single client, no hyper duplication)
-reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
+# HTTP client
+reqwest = { version = "0.13", features = ["form", "json", "stream"] }
 
 # Serialization (minimal - only for auth responses and error formatting)
 serde = { version = "1.0", features = ["derive"] }
@@ -26,7 +26,7 @@ clap = { version = "4.5", features = ["derive"] }
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Logging
 tracing = "0.1"
@@ -34,10 +34,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Configuration
 dotenvy = "0.15"
-dirs = "5.0"
+dirs = "6.0"
 
 # Async streaming
 futures = "0.3"
+
+# Service management
+service-manager = "0.10"
 
 [[bin]]
 name = "copilot-api-proxy"

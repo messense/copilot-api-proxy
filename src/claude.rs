@@ -89,7 +89,11 @@ pub fn convert_claude_request(body: Bytes) -> Result<ClaudeConvertedRequest, Err
     let is_vision = messages.iter().any(|msg| {
         msg.get("content")
             .and_then(|c| c.as_array())
-            .map(|parts| parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some(CONTENT_IMAGE)))
+            .map(|parts| {
+                parts
+                    .iter()
+                    .any(|p| p.get("type").and_then(|t| t.as_str()) == Some(CONTENT_IMAGE))
+            })
             .unwrap_or(false)
     });
 

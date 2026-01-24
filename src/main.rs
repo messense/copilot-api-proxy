@@ -3,6 +3,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use copilot_api_proxy::{auth, config, server};
+use service_manager::{
+    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager,
+    ServiceUninstallCtx,
+};
+use std::ffi::OsString;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
@@ -24,6 +29,22 @@ enum Commands {
         #[arg(long, default_value = "info")]
         log_level: String,
     },
+    /// Manage the system service
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Install the service daemon
+    Install {
+        #[arg(short, long, default_value = "9876")]
+        port: u16,
+    },
+    /// Uninstall the service daemon
+    Uninstall,
 }
 
 #[tokio::main]
@@ -35,6 +56,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Auth => run_auth().await,
         Commands::Server { port, log_level } => run_server(port, &log_level).await,
+        Commands::Service { action } => match action {
+            ServiceAction::Install { port } => install_service(port),
+            ServiceAction::Uninstall => uninstall_service(),
+        },
     }
 }
 
@@ -81,4 +106,58 @@ fn init_tracing(default_filter: &str) {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+}
+
+const SERVICE_LABEL: &str = "me.messense.copilot-api-proxy";
+
+fn install_service(port: u16) -> Result<()> {
+    let label: ServiceLabel = SERVICE_LABEL.parse()?;
+    let mut manager = <dyn ServiceManager>::native()?;
+
+    let program = std::env::current_exe()?;
+    let args = vec![
+        OsString::from("server"),
+        OsString::from("--port"),
+        OsString::from(port.to_string()),
+    ];
+
+    manager.set_level(ServiceLevel::User)?;
+    manager.install(ServiceInstallCtx {
+        label: label.clone(),
+        program,
+        args,
+        contents: None,
+        username: None,
+        working_directory: None,
+        environment: None,
+        autostart: true,
+        restart_policy: RestartPolicy::OnFailure {
+            delay_secs: Some(10),
+        },
+    })?;
+
+    println!("Service installed successfully as '{}'", SERVICE_LABEL);
+    println!("The service will start automatically on system boot.");
+    println!("\nTo start the service now, run:");
+    #[cfg(target_os = "macos")]
+    println!(
+        "  launchctl load ~/Library/LaunchAgents/{}.plist",
+        SERVICE_LABEL
+    );
+    #[cfg(target_os = "linux")]
+    println!("  systemctl --user start {}", SERVICE_LABEL);
+
+    Ok(())
+}
+
+fn uninstall_service() -> Result<()> {
+    let label: ServiceLabel = SERVICE_LABEL.parse()?;
+    let mut manager = <dyn ServiceManager>::native()?;
+    manager.set_level(ServiceLevel::User)?;
+
+    manager.uninstall(ServiceUninstallCtx { label })?;
+
+    println!("Service '{}' uninstalled successfully.", SERVICE_LABEL);
+
+    Ok(())
 }

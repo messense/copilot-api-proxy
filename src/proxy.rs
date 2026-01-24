@@ -98,10 +98,7 @@ fn copilot_headers(initiator: Option<&str>, is_vision: bool) -> HeaderMap {
     );
 
     if is_vision {
-        h.insert(
-            "Copilot-Vision-Request",
-            HeaderValue::from_static("true"),
-        );
+        h.insert("Copilot-Vision-Request", HeaderValue::from_static("true"));
     }
 
     h

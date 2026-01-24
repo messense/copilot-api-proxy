@@ -37,10 +37,17 @@ pub fn analyze_openai_chat_completions(body: &[u8]) -> RequestAnalysis {
     let is_vision = messages.iter().any(|msg| {
         msg.get("content")
             .and_then(|c| c.as_array())
-            .map(|parts| parts.iter().any(|p| p.get("type") == Some(&Value::String("image_url".to_string()))))
+            .map(|parts| {
+                parts
+                    .iter()
+                    .any(|p| p.get("type") == Some(&Value::String("image_url".to_string())))
+            })
             .unwrap_or(false)
     });
-    RequestAnalysis { initiator, is_vision }
+    RequestAnalysis {
+        initiator,
+        is_vision,
+    }
 }
 
 /// Analyze OpenAI responses API request for initiator and vision.
@@ -73,10 +80,17 @@ pub fn analyze_openai_responses(body: &[u8]) -> RequestAnalysis {
     let is_vision = items.iter().any(|item| {
         item.get("content")
             .and_then(|c| c.as_array())
-            .map(|parts| parts.iter().any(|p| p.get("type") == Some(&Value::String("input_image".to_string()))))
+            .map(|parts| {
+                parts
+                    .iter()
+                    .any(|p| p.get("type") == Some(&Value::String("input_image".to_string())))
+            })
             .unwrap_or(false)
     });
-    RequestAnalysis { initiator, is_vision }
+    RequestAnalysis {
+        initiator,
+        is_vision,
+    }
 }
 
 fn infer_initiator_from_messages(messages: &[Value], agent_roles: &[&str]) -> &'static str {
