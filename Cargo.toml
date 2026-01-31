@@ -39,6 +39,9 @@ dirs = "6.0"
 # Async streaming
 futures = "0.3"
 
+# Token counting
+tiktoken-rs = "0.9"
+
 # Service management
 service-manager = "0.10"
 

@@ -9,6 +9,7 @@ use crate::initiator::{
     RequestAnalysis, analyze_openai_chat_completions, analyze_openai_responses,
 };
 use crate::proxy::{ProxyClient, forward_response};
+use crate::token_counter::handle_count_tokens;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Path, State};
@@ -64,6 +65,16 @@ async fn proxy_handler(
 ) -> Result<Response, Error> {
     let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
     let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+
+    // Special case: Anthropic token counting
+    if path == "messages/count_tokens" {
+        if method != Method::POST {
+            return Ok(error_from_proxy(Error::InvalidRequest(
+                "Only POST is supported for /v1/messages/count_tokens".to_string(),
+            )));
+        }
+        return handle_count_tokens(body).await;
+    }
 
     if path == "messages" {
         if method != Method::POST {

@@ -7,5 +7,6 @@ pub mod error;
 pub mod initiator;
 pub mod proxy;
 pub mod server;
+pub mod token_counter;
 
 pub use error::Error;
