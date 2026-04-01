@@ -1,5 +1,6 @@
 //! Axum server: router, handlers, and application state.
 
+use crate::amp::AmpManagementProxy;
 use crate::auth::TokenManager;
 use crate::claude::{
     convert_claude_request, convert_openai_response, error_from_proxy, validate_anthropic_headers,
@@ -33,7 +34,8 @@ fn analyze_request(path: &str, method: &Method, body: &[u8]) -> Option<RequestAn
 
 #[derive(Clone)]
 pub struct AppState {
-    proxy: Arc<ProxyClient>,
+    pub(crate) proxy: Arc<ProxyClient>,
+    pub(crate) amp_management: Arc<AmpManagementProxy>,
 }
 
 impl AppState {
@@ -41,13 +43,18 @@ impl AppState {
         let token = crate::config::load_github_token()?;
         let manager = Arc::new(TokenManager::new(token).await?);
         let proxy = Arc::new(ProxyClient::new(manager)?);
-        Ok(Self { proxy })
+        let amp_management = Arc::new(AmpManagementProxy::new());
+        Ok(Self {
+            proxy,
+            amp_management,
+        })
     }
 }
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/{*path}", any(proxy_handler))
+        .merge(crate::amp::routes())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             10 * 1024 * 1024,

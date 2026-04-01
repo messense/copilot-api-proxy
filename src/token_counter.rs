@@ -86,7 +86,9 @@ async fn count_tokens_internal(body: &[u8]) -> Result<u64, Error> {
     Ok(final_count)
 }
 
-fn count_openai_tokens(openai_value: &Value) -> Result<u64, Error> {
+/// Count tokens in an OpenAI-format message array using tiktoken.
+/// Used by both Anthropic and Gemini token counting endpoints.
+pub(crate) fn count_openai_tokens(openai_value: &Value) -> Result<u64, Error> {
     // Get the tokenizer (o200k_base is used by GPT-4o and newer models)
     let bpe = tiktoken_rs::o200k_base()
         .map_err(|e| Error::InvalidRequest(format!("Failed to load tokenizer: {e}")))?;

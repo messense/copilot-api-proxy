@@ -548,6 +548,7 @@ fn convert_openai_to_claude_response(value: &Value, original_model: &str) -> Res
                     "id": tool_id,
                     "name": name,
                     "input": input,
+                    "signature": "",
                 }));
             }
         }
@@ -913,7 +914,8 @@ impl StreamConverter {
                                         "type": CONTENT_TOOL_USE,
                                         "id": id,
                                         "name": name,
-                                        "input": {}
+                                        "input": {},
+                                        "signature": "",
                                     }
                                 });
                                 pending.push_back(Bytes::from(format!(
