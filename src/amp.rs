@@ -78,19 +78,29 @@ impl AmpManagementProxy {
 
         let mut req = self.client.request(method, &url);
 
-        // Forward headers, stripping hop-by-hop and auth
+        // Resolve upstream API key: AMP_API_KEY env → amp secrets file
+        let upstream_key = resolve_ampcode_api_key();
+
+        // Forward headers, stripping hop-by-hop headers.
+        // Also strip auth headers when we have a resolved upstream key
+        // (we'll inject the resolved key instead).
         for (key, value) in headers.iter() {
-            if !SKIP_FORWARD_HEADERS.contains(&key.as_str()) {
-                req = req.header(key, value);
+            let k = key.as_str();
+            if SKIP_FORWARD_HEADERS.contains(&k) {
+                continue;
             }
+            if upstream_key.is_some()
+                && (k == "authorization" || k == "x-api-key" || k == "x-goog-api-key")
+            {
+                continue;
+            }
+            req = req.header(key, value);
         }
 
-        // If we have an explicit upstream API key (env var or ampcode.com secrets),
-        // replace the client's auth with it. Otherwise, forward the client's auth
-        // headers as-is — Amp CLI sends its ampcode.com API key directly.
-        if let Some(api_key) = resolve_ampcode_api_key() {
+        // Inject resolved upstream key if available
+        if let Some(api_key) = &upstream_key {
             req = req.header("authorization", format!("Bearer {api_key}"));
-            req = req.header("x-api-key", &api_key);
+            req = req.header("x-api-key", api_key);
         }
 
         let resp = req.body(body).send().await?;
