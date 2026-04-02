@@ -332,6 +332,9 @@ fn convert_gemini_tools(tools: &[Value]) -> Vec<Value> {
                 .get("parameters")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
+            // Gemini uses UPPERCASE type names (OBJECT, STRING, etc.) but
+            // OpenAI expects lowercase (object, string, etc.).
+            let parameters = lowercase_schema_types(parameters);
             openai_tools.push(serde_json::json!({
                 "type": "function",
                 "function": {
@@ -343,6 +346,46 @@ fn convert_gemini_tools(tools: &[Value]) -> Vec<Value> {
         }
     }
     openai_tools
+}
+
+/// Recursively convert Gemini UPPERCASE schema type names to OpenAI lowercase.
+///
+/// Gemini uses `"type": "OBJECT"`, `"STRING"`, `"NUMBER"`, `"INTEGER"`,
+/// `"BOOLEAN"`, `"ARRAY"` whereas OpenAI expects lowercase equivalents.
+fn lowercase_schema_types(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(map) => {
+            if let Some(Value::String(t)) = map.get_mut("type") {
+                let lower = t.to_ascii_lowercase();
+                *t = lower;
+            }
+            // Recurse into "properties"
+            if let Some(Value::Object(props)) = map.get_mut("properties") {
+                for v in props.values_mut() {
+                    *v = lowercase_schema_types(v.take());
+                }
+            }
+            // Recurse into "items" (for array types)
+            if let Some(items) = map.get_mut("items") {
+                *items = lowercase_schema_types(items.take());
+            }
+            // Recurse into "anyOf" / "oneOf" / "allOf"
+            for key in ["anyOf", "oneOf", "allOf"] {
+                if let Some(Value::Array(arr)) = map.get_mut(key) {
+                    for v in arr.iter_mut() {
+                        *v = lowercase_schema_types(v.take());
+                    }
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                *v = lowercase_schema_types(v.take());
+            }
+        }
+        _ => {}
+    }
+    value
 }
 
 fn extract_text_parts(parts: Option<&Value>) -> String {
@@ -866,5 +909,63 @@ mod tests {
         let parts = &gemini["candidates"][0]["content"]["parts"];
         assert_eq!(parts[0]["functionCall"]["name"], "search");
         assert_eq!(parts[0]["functionCall"]["args"]["q"], "foo");
+    }
+
+    #[test]
+    fn test_lowercase_schema_types() {
+        let schema = serde_json::json!({
+            "type": "OBJECT",
+            "properties": {
+                "name": {"type": "STRING", "description": "A name"},
+                "age": {"type": "INTEGER"},
+                "tags": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"}
+                },
+                "nested": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "flag": {"type": "BOOLEAN"}
+                    }
+                }
+            }
+        });
+        let result = lowercase_schema_types(schema);
+        assert_eq!(result["type"], "object");
+        assert_eq!(result["properties"]["name"]["type"], "string");
+        assert_eq!(result["properties"]["age"]["type"], "integer");
+        assert_eq!(result["properties"]["tags"]["type"], "array");
+        assert_eq!(result["properties"]["tags"]["items"]["type"], "string");
+        assert_eq!(result["properties"]["nested"]["type"], "object");
+        assert_eq!(result["properties"]["nested"]["properties"]["flag"]["type"], "boolean");
+    }
+
+    #[test]
+    fn test_tools_with_uppercase_types() {
+        let body = serde_json::json!({
+            "contents": [{
+                "role": "user",
+                "parts": [{"text": "Hello"}]
+            }],
+            "tools": [{
+                "functionDeclarations": [{
+                    "name": "create_review",
+                    "description": "Create a review",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "summary": {"type": "STRING"}
+                        }
+                    }
+                }]
+            }]
+        });
+        let result =
+            convert_gemini_request("gemini-2.5-pro", Bytes::from(body.to_string()), false)
+                .unwrap();
+        let openai: Value = serde_json::from_slice(&result.body).unwrap();
+        let params = &openai["tools"][0]["function"]["parameters"];
+        assert_eq!(params["type"], "object");
+        assert_eq!(params["properties"]["summary"]["type"], "string");
     }
 }
