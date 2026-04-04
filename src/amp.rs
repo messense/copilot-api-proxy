@@ -16,10 +16,11 @@ use crate::gemini::{
 use crate::initiator::{analyze_openai_chat_completions, analyze_openai_responses, RequestAnalysis};
 use crate::proxy::forward_response;
 use crate::server::AppState;
+use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Path, State};
-use axum::http::{HeaderMap, Method, Uri};
-use axum::response::Response;
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use reqwest::Client;
@@ -82,7 +83,29 @@ impl AmpManagementProxy {
     ) -> Result<Response, Error> {
         let url = format!("{}{}", self.upstream_url, path_and_query);
 
-        let mut req = self.client.request(method, &url);
+        // Log the request details
+        tracing::debug!(
+            target: "amp_proxy",
+            method = %method,
+            path = %path_and_query,
+            body_size = body.len(),
+            "Forwarding request to ampcode.com"
+        );
+
+        // Log request body if it's small and looks like JSON
+        if body.len() > 0 && body.len() < 4096 {
+            if let Ok(body_str) = std::str::from_utf8(&body) {
+                if body_str.trim_start().starts_with('{') || body_str.trim_start().starts_with('[') {
+                    tracing::debug!(
+                        target: "amp_proxy",
+                        body = %body_str,
+                        "Request body"
+                    );
+                }
+            }
+        }
+
+        let mut req = self.client.request(method.clone(), &url);
 
         // Resolve upstream API key: AMP_API_KEY env → amp secrets file
         let upstream_key = resolve_ampcode_api_key();
@@ -110,6 +133,16 @@ impl AmpManagementProxy {
         }
 
         let resp = req.body(body).send().await?;
+        
+        // Log the response details
+        tracing::debug!(
+            target: "amp_proxy",
+            method = %method,
+            path = %path_and_query,
+            status = %resp.status(),
+            "Received response from ampcode.com"
+        );
+
         forward_response(resp).await
     }
 }
@@ -140,6 +173,56 @@ fn resolve_ampcode_api_key() -> Option<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn amp_local_fallback_response(method: &Method, path: &str, reason: impl Into<String>) -> Response {
+    let reason = reason.into();
+    tracing::error!(
+        target: "amp_proxy",
+        method = %method,
+        path = %path,
+        reason = %reason,
+        "amp-local blocked upstream fallback"
+    );
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": {
+                "message": format!(
+                    "--amp-local blocked upstream fallback for {} {}: {}",
+                    method, path, reason
+                ),
+                "type": "amp_local_unimplemented",
+                "path": path,
+                "method": method.as_str()
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn amp_local_stub_news_rss() -> Response {
+    tracing::warn!(
+        target: "amp_proxy",
+        path = "/news.rss",
+        "Serving local stub for /news.rss in --amp-local mode"
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "application/rss+xml; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Amp Local News</title>
+    <description>Local stub feed served by copilot-api-proxy in --amp-local mode.</description>
+    <link>http://localhost/</link>
+  </channel>
+</rss>
+"#,
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -177,8 +260,21 @@ async fn amp_api_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
+    tracing::debug!(
+        target: "amp_proxy",
+        method = %method,
+        path = %path,
+        "Received /api/* request"
+    );
+
     if let Some(rest) = path.strip_prefix("provider/")
         && let Some((provider, provider_path)) = rest.split_once('/') {
+            tracing::debug!(
+                target: "amp_proxy",
+                provider = %provider,
+                provider_path = %provider_path,
+                "Routing to provider handler"
+            );
             return handle_provider(state, method, provider, provider_path, &uri, headers, body)
                 .await;
         }
@@ -186,6 +282,11 @@ async fn amp_api_handler(
     // When amp-local mode is enabled, handle management routes locally
     if let Some(ref local_state) = state.amp_local
         && crate::amp_local::should_handle_locally(&path) {
+            tracing::debug!(
+                target: "amp_proxy",
+                path = %path,
+                "Handling locally with amp-local"
+            );
             return crate::amp_local::handle_local_api(
                 local_state,
                 &method,
@@ -197,11 +298,25 @@ async fn amp_api_handler(
             .await;
         }
 
-    // Management route — proxy to ampcode.com
     let pq = uri
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
+
+    if state.amp_local.is_some() {
+        return Ok(amp_local_fallback_response(
+            &method,
+            pq,
+            format!("no local /api handler matched for path '{path}'"),
+        ));
+    }
+
+    // Management route — proxy to ampcode.com
+    tracing::debug!(
+        target: "amp_proxy",
+        path = %path,
+        "Proxying management route to ampcode.com"
+    );
     state
         .amp_management
         .forward(method, pq, headers, body)
@@ -220,6 +335,25 @@ async fn management_handler(
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
+    
+    if state.amp_local.is_some() {
+        if uri.path() == "/news.rss" {
+            return Ok(amp_local_stub_news_rss());
+        }
+        return Ok(amp_local_fallback_response(
+            &method,
+            pq,
+            "root-level Amp route is not implemented locally",
+        ));
+    }
+
+    tracing::debug!(
+        target: "amp_proxy",
+        method = %method,
+        path = %pq,
+        "Proxying root-level management route to ampcode.com"
+    );
+
     state
         .amp_management
         .forward(method, pq, headers, body)
@@ -248,11 +382,19 @@ async fn handle_provider(
         "anthropic" => handle_anthropic(state, method, api_path, uri, headers, body).await,
         "google" => handle_google(state, method, api_path, uri, headers, body).await,
         _ => {
-            // Unsupported provider (google, etc.) — forward to ampcode.com
             let pq = uri
                 .path_and_query()
                 .map(|pq| pq.as_str())
                 .unwrap_or(uri.path());
+            if state.amp_local.is_some() {
+                return Ok(amp_local_fallback_response(
+                    &method,
+                    pq,
+                    format!("unsupported Amp provider '{provider}'"),
+                ));
+            }
+
+            // Unsupported provider — forward to ampcode.com
             state
                 .amp_management
                 .forward(method, pq, headers, body)
@@ -404,11 +546,19 @@ async fn handle_google(
             }
             "countTokens" => handle_gemini_count_tokens(model, body).await,
             _ => {
-                // Unknown action — forward to ampcode.com
                 let pq = uri
                     .path_and_query()
                     .map(|pq| pq.as_str())
                     .unwrap_or(uri.path());
+                if state.amp_local.is_some() {
+                    return Ok(amp_local_fallback_response(
+                        &method,
+                        pq,
+                        format!("unsupported Gemini action '{action}'"),
+                    ));
+                }
+
+                // Unknown action — forward to ampcode.com
                 state
                     .amp_management
                     .forward(method, pq, headers, body)
@@ -416,11 +566,19 @@ async fn handle_google(
             }
         }
     } else {
-        // Models listing, model info, etc. — forward to ampcode.com
         let pq = uri
             .path_and_query()
             .map(|pq| pq.as_str())
             .unwrap_or(uri.path());
+        if state.amp_local.is_some() {
+            return Ok(amp_local_fallback_response(
+                &method,
+                pq,
+                "Gemini route did not match a supported local action",
+            ));
+        }
+
+        // Models listing, model info, etc. — forward to ampcode.com
         state
             .amp_management
             .forward(method, pq, headers, body)

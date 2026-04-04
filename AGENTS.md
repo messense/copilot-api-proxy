@@ -12,7 +12,7 @@
 
 - Keep OpenAI-compatible routes as raw-byte passthrough whenever possible.
 - Do protocol translation only on explicit compatibility surfaces such as `/v1/messages`, `/v1/messages/count_tokens`, and Amp Anthropic / Gemini provider routes.
-- Proxy Amp management traffic to `ampcode.com` by default, except for the optional local `/api/*` subset in `--amp-local` mode.
+- Proxy Amp management traffic to `ampcode.com` by default. In `--amp-local` mode, serve the supported local `/api/*` subset, stub `/news.rss`, and fail loudly for unsupported Amp fallbacks instead of proxying them upstream.
 - Limit request inspection to the minimum needed for sticky inference and vision detection.
 
 ---
@@ -146,7 +146,8 @@ Axum Router
            +-- /api/provider/anthropic/* -> Claude compatibility conversion
            +-- /api/provider/google/* -> Gemini compatibility conversion
            +-- selected /api/* management routes -> local handlers when --amp-local is enabled
-           '-- remaining /api/*, /threads*, /auth*, /docs*, /settings* -> ampcode.com proxy
+           +-- /news.rss -> local stub when --amp-local is enabled
+           '-- remaining unsupported Amp routes -> ampcode.com proxy by default, loud 501 under --amp-local
 ```
 
 ### Key Architectural Decisions
@@ -158,7 +159,7 @@ Axum Router
 5. **Token refresh is background-managed**. `TokenManager` owns the Copilot token lifecycle and refreshes automatically.
 6. **Response forwarding is unified**. `forward_response()` handles both buffered and SSE responses while stripping hop-by-hop headers.
 7. **The server enforces a 10 MiB body limit** with `RequestBodyLimitLayer` and enables request tracing with `TraceLayer`.
-8. **Local Amp mode is opt-in and limited to part of `/api/*`**. `--amp-local` enables `src/amp_local.rs` for thread search, markdown export, internal RPCs, telemetry, labels, attachments, durable thread workers, and user info backed by local Amp data. Root-level `/threads*`, `/auth*`, `/docs*`, `/settings*`, and RSS routes still proxy upstream.
+8. **Local Amp mode is opt-in and strict**. `--amp-local` enables `src/amp_local.rs` for thread search, markdown export, internal RPCs, telemetry, labels, attachments, durable thread workers, and user info backed by local Amp data. It also serves a local `/news.rss` stub. Any other unsupported Amp fallback route returns a loud `501 Not Implemented` error instead of proxying upstream.
 9. **Amp local web search is pluggable**. `--search-provider` selects `jina`, `tavily`, `brave`, `searxng`, `model`, or `none`; `--search-model` applies when the provider is `model` and defaults to `gpt-5-mini`.
 
 ### Module Structure
@@ -252,7 +253,7 @@ The flow is:
 3. Convert buffered or streaming responses back to Gemini format
 4. Estimate token counts locally for `countTokens`
 
-### 4. Amp Management Routes Proxy To `ampcode.com`
+### 4. Amp Management Routes Default To `ampcode.com`, But `--amp-local` Is Strict
 
 **File**: `src/amp.rs`
 
@@ -271,7 +272,7 @@ Auth handling for this proxy is separate from Copilot auth:
 - otherwise `~/.local/share/amp/secrets.json` is consulted
 - when an upstream Amp API key is resolved, incoming auth headers are stripped and replaced
 
-When `--amp-local` is enabled, a subset of `/api/*` management routes is handled locally instead of being proxied:
+When `--amp-local` is enabled, these routes are handled locally:
 
 - `/api/threads/find`
 - `/api/threads/{id}.md`
@@ -280,8 +281,11 @@ When `--amp-local` is enabled, a subset of `/api/*` management routes is handled
 - `/api/durable-thread-workers/*`
 - `/api/users/*`
 - `/api/attachments`
+- `/news.rss` as a local stub feed
 
 Those handlers use local Amp thread data from `AMP_THREADS_DIR` or `~/.local/share/amp/threads`.
+
+Any other unsupported Amp fallback route returns `501 Not Implemented` with an `amp_local_unimplemented` error payload and an `amp_proxy` error log instead of proxying upstream.
 
 ### 4a. Amp Local Search Backends
 
@@ -458,6 +462,10 @@ If `ANTHROPIC_API_KEY` is set, clients must send the same key via `x-api-key` or
 ### Amp management routes fail with upstream auth errors
 
 Set `AMP_API_KEY` or make sure `~/.local/share/amp/secrets.json` contains a valid Amp API key.
+
+### `--amp-local` returns `501 Not Implemented` for Amp routes
+
+That means the request hit an unsupported Amp fallback route. Only the documented local `/api/*` subset is implemented in `--amp-local`, plus a stub `/news.rss`. Other Amp management routes now fail loudly instead of proxying to `ampcode.com`.
 
 ### Upstream errors
 

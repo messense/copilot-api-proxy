@@ -25,7 +25,7 @@ A reverse proxy for GitHub Copilot that exposes OpenAI-compatible `/v1/*` routes
 - Anthropic-compatible `/v1/messages` and `/v1/messages/count_tokens`
 - Amp provider routes for OpenAI, Anthropic, and Gemini clients
 - Amp management proxy by default for `/api/*`, `/threads*`, `/auth*`, `/docs*`, `/settings*`, and RSS routes
-- Optional `--amp-local` mode for local `/api/threads/*`, `/api/internal`, telemetry, labels, and user info endpoints
+- Optional `--amp-local` mode for local `/api/threads/*`, `/api/internal`, telemetry, labels, and user info endpoints, with strict fallback blocking for unsupported Amp routes
 - Pluggable web search backends for Amp local mode: `jina`, `tavily`, `brave`, `searxng`, `model`, or `none`
 - Streaming, tool/function calling, and vision support
 - Sticky `X-Initiator` inference for multi-turn requests
@@ -95,7 +95,8 @@ Use `http://localhost:9876` as the base URL for OpenAI-compatible and Anthropic-
 | `/api/provider/anthropic/{version}/messages/count_tokens` | POST | Local Anthropic token counting for Amp clients. |
 | `/api/provider/google/{version}/models/{model}:{action}` | POST | Gemini `generateContent`, `streamGenerateContent`, and `countTokens` translated through Copilot. |
 | `/api/threads/find`, `/api/threads/{id}.md`, `/api/internal`, `/api/telemetry`, `/api/durable-thread-workers/*`, `/api/users/*`, `/api/attachments` | Varies | Handled locally only when `--amp-local` is enabled. |
-| Other `/api/*`, `/auth*`, `/threads*`, `/threads.rss`, `/docs*`, `/settings*`, `/news.rss` | Any | Amp management routes proxied to `https://ampcode.com` or `AMP_UPSTREAM_URL`. |
+| `/news.rss` | Any | Proxied to Amp upstream by default. Served as a small local RSS stub when `--amp-local` is enabled. |
+| Other unsupported Amp management routes such as `/api/*` fallbacks, `/auth*`, `/threads*`, `/threads.rss`, `/docs*`, and `/settings*` | Any | Proxied to `https://ampcode.com` or `AMP_UPSTREAM_URL` by default. Under `--amp-local`, these routes return `501 Not Implemented` instead of proxying upstream. |
 
 ## Usage Examples
 
@@ -194,7 +195,7 @@ copilot-api-proxy service uninstall
 | `MAX_TOKENS_LIMIT` | Maximum Anthropic `max_tokens` forwarded upstream | `4096` |
 | `MIN_TOKENS_LIMIT` | Minimum Anthropic `max_tokens` forwarded upstream | `100` |
 | `AMP_API_KEY` | API key injected when proxying Amp management routes | Amp secrets file or unset |
-| `AMP_UPSTREAM_URL` | Base URL for proxied Amp management routes | `https://ampcode.com` |
+| `AMP_UPSTREAM_URL` | Base URL for Amp management routes when proxying is allowed | `https://ampcode.com` |
 | `AMP_THREADS_DIR` | Override the local Amp thread directory used by `--amp-local` | `~/.local/share/amp/threads` |
 | `JINA_API_KEY` | Optional API key for Jina search/reader backend | Unset |
 | `TAVILY_API_KEY` | API key for `--search-provider tavily` | Unset |
@@ -236,7 +237,12 @@ Clients must then provide the key via `x-api-key` or `Authorization: Bearer ...`
 - `/api/users/*`
 - `/api/attachments`
 
-Root-level Amp routes such as `/threads*`, `/auth*`, `/docs*`, `/settings*`, `/threads.rss`, and `/news.rss` are still proxied upstream.
+In addition:
+
+- `/news.rss` is served by a local stub feed
+- any other would-be Amp upstream fallback returns `501 Not Implemented` and logs an `amp_proxy` error instead of proxying upstream
+
+That means unsupported root-level routes such as `/threads*`, `/auth*`, `/docs*`, `/settings*`, and `/threads.rss` no longer silently escape to `ampcode.com` under `--amp-local`.
 
 Available search backends for local mode:
 
@@ -254,7 +260,7 @@ Available search backends for local mode:
 3. `TokenManager` refreshes the Copilot token in the background before expiry.
 4. OpenAI-compatible `/v1/*` requests are forwarded to `api.individual.githubcopilot.com` with Copilot headers injected.
 5. Anthropic and Gemini compatibility routes translate request and response formats around the same Copilot upstream.
-6. Amp provider routes are handled locally when supported; Amp management routes are proxied to `ampcode.com`, except for the `--amp-local` `/api/*` subset above.
+6. Amp provider routes are handled locally when supported; Amp management routes are proxied to `ampcode.com` by default, while `--amp-local` serves the supported local `/api/*` subset, stubs `/news.rss`, and rejects other Amp fallbacks with `501 Not Implemented`.
 
 ### Sticky Inference
 
