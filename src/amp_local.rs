@@ -134,13 +134,17 @@ pub struct LocalAmpState {
 }
 
 impl LocalAmpState {
-    pub fn new(search_provider: SearchProvider, proxy: Arc<ProxyClient>) -> Self {
+    pub fn new(
+        search_provider: SearchProvider,
+        proxy: Arc<ProxyClient>,
+        search_model: Option<String>,
+    ) -> Self {
         let threads_dir = amp_threads_dir();
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to create HTTP client for local amp");
-        let web = web_backend::create_backend(&search_provider, http, Some(proxy));
+        let web = web_backend::create_backend(&search_provider, http, Some(proxy), search_model);
         tracing::info!("Search provider: {}", search_provider);
         Self {
             threads_dir,

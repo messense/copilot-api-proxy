@@ -11,16 +11,17 @@ use std::sync::Arc;
 pub struct ModelBackend {
     http: Client,
     proxy: Arc<ProxyClient>,
+    model: String,
 }
 
 impl ModelBackend {
-    pub fn new(http: Client, proxy: Arc<ProxyClient>) -> Self {
-        Self { http, proxy }
+    pub fn new(http: Client, proxy: Arc<ProxyClient>, model: String) -> Self {
+        Self { http, proxy, model }
     }
 
     async fn search_via_model(&self, query: &str) -> Result<String, String> {
         let body = serde_json::json!({
-            "model": "gpt-4o-mini",
+            "model": self.model,
             "messages": [
                 {
                     "role": "system",
@@ -30,11 +31,7 @@ impl ModelBackend {
                     "role": "user",
                     "content": format!("Search the web for: {}", query)
                 }
-            ],
-            "tools": [
-                { "type": "web_search_preview" }
-            ],
-            "tool_choice": "auto"
+            ]
         });
 
         let body_bytes = Bytes::from(serde_json::to_vec(&body).map_err(|e| e.to_string())?);

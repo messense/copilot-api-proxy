@@ -42,7 +42,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub async fn new(amp_local: bool, search_provider: SearchProvider) -> Result<Self, Error> {
+    pub async fn new(
+        amp_local: bool,
+        search_provider: SearchProvider,
+        search_model: Option<String>,
+    ) -> Result<Self, Error> {
         let token = crate::config::load_github_token()?;
         let manager = Arc::new(TokenManager::new(token).await?);
         let proxy = Arc::new(ProxyClient::new(manager)?);
@@ -51,6 +55,7 @@ impl AppState {
             Some(Arc::new(LocalAmpState::new(
                 search_provider,
                 Arc::clone(&proxy),
+                search_model,
             )))
         } else {
             None

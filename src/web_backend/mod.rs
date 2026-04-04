@@ -101,6 +101,7 @@ pub fn create_backend(
     provider: &SearchProvider,
     http: reqwest::Client,
     proxy: Option<std::sync::Arc<crate::proxy::ProxyClient>>,
+    search_model: Option<String>,
 ) -> Box<dyn WebBackend> {
     match provider {
         SearchProvider::Jina => Box::new(jina::JinaBackend::new(http)),
@@ -110,7 +111,8 @@ pub fn create_backend(
         SearchProvider::Model => {
             let proxy =
                 proxy.expect("--search-provider=model requires the Copilot proxy to be running");
-            Box::new(model::ModelBackend::new(http, proxy))
+            let model = search_model.unwrap_or_else(|| "gpt-5-mini".to_string());
+            Box::new(model::ModelBackend::new(http, proxy, model))
         }
         SearchProvider::None => Box::new(none::NoneBackend),
     }

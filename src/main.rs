@@ -37,6 +37,10 @@ enum Commands {
         /// Requires --amp-local. Some backends need env vars for API keys.
         #[arg(long, default_value = "jina", value_parser = clap::value_parser!(SearchProvider))]
         search_provider: SearchProvider,
+        /// Model to use for --search-provider=model.
+        /// Any Copilot-supported chat model works. Cheaper models save quota.
+        #[arg(long, default_value = "gpt-5-mini")]
+        search_model: String,
     },
     /// Manage the system service
     Service {
@@ -69,7 +73,8 @@ async fn main() -> Result<()> {
             log_level,
             amp_local,
             search_provider,
-        } => run_server(port, &log_level, amp_local, search_provider).await,
+            search_model,
+        } => run_server(port, &log_level, amp_local, search_provider, search_model).await,
         Commands::Service { action } => match action {
             ServiceAction::Install { port } => install_service(port),
             ServiceAction::Uninstall => uninstall_service(),
@@ -93,11 +98,22 @@ async fn run_auth() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(port: u16, log_level: &str, amp_local: bool, search_provider: SearchProvider) -> Result<()> {
+async fn run_server(
+    port: u16,
+    log_level: &str,
+    amp_local: bool,
+    search_provider: SearchProvider,
+    search_model: String,
+) -> Result<()> {
     let filter = format!("copilot_api_proxy={},tower_http={}", log_level, log_level);
     init_tracing(&filter);
 
-    let state = server::AppState::new(amp_local, search_provider).await?;
+    let model_opt = if matches!(search_provider, SearchProvider::Model) {
+        Some(search_model)
+    } else {
+        None
+    };
+    let state = server::AppState::new(amp_local, search_provider, model_opt).await?;
     let app = server::create_router(state);
 
     if amp_local {
