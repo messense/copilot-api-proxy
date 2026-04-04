@@ -1,6 +1,6 @@
 # copilot-api-proxy
 
-A reverse proxy for GitHub Copilot that exposes OpenAI-compatible `/v1/*` routes, an Anthropic-compatible `/v1/messages` surface, and Amp provider routes for OpenAI, Anthropic, and Gemini. OpenAI requests are forwarded mostly unchanged; Anthropic and Gemini compatibility routes translate to Copilot's OpenAI-style upstream.
+A reverse proxy for GitHub Copilot that exposes OpenAI-compatible `/v1/*` routes, an Anthropic-compatible `/v1/messages` surface, and Amp provider routes for OpenAI, Anthropic, and Gemini. OpenAI requests are forwarded mostly unchanged; Anthropic and Gemini compatibility routes translate to Copilot's OpenAI-style upstream. An optional `--amp-local` mode serves part of Amp's management API from local thread data with pluggable web search backends.
 
 > [!WARNING]
 > This is a reverse-engineered proxy of GitHub Copilot API. It is not supported by GitHub, and may break unexpectedly. Use at your own risk.
@@ -24,7 +24,9 @@ A reverse proxy for GitHub Copilot that exposes OpenAI-compatible `/v1/*` routes
 - OpenAI-compatible passthrough on `/v1/*`
 - Anthropic-compatible `/v1/messages` and `/v1/messages/count_tokens`
 - Amp provider routes for OpenAI, Anthropic, and Gemini clients
-- Amp management proxy for `/api/*`, `/threads*`, `/auth*`, `/docs*`, `/settings*`, and RSS routes
+- Amp management proxy by default for `/api/*`, `/threads*`, `/auth*`, `/docs*`, `/settings*`, and RSS routes
+- Optional `--amp-local` mode for local `/api/threads/*`, `/api/internal`, telemetry, labels, and user info endpoints
+- Pluggable web search backends for Amp local mode: `jina`, `tavily`, `brave`, `searxng`, `model`, or `none`
 - Streaming, tool/function calling, and vision support
 - Sticky `X-Initiator` inference for multi-turn requests
 - GitHub OAuth device flow authentication
@@ -67,8 +69,14 @@ copilot-api-proxy server --port 8080
 # With debug logging
 copilot-api-proxy server --log-level debug
 
-# Local Amp mode (no ampcode.com dependency)
+# Local Amp API subset from local thread data
 copilot-api-proxy server --amp-local
+
+# Local Amp mode with an explicit search backend
+copilot-api-proxy server --amp-local --search-provider jina
+
+# Local Amp mode using Copilot Responses API web search
+copilot-api-proxy server --amp-local --search-provider model --search-model gpt-5-mini
 ```
 
 ### 3. Point clients at the proxy
@@ -86,7 +94,8 @@ Use `http://localhost:9876` as the base URL for OpenAI-compatible and Anthropic-
 | `/api/provider/anthropic/{version}/messages` | POST | Amp Anthropic provider route converted through Copilot. |
 | `/api/provider/anthropic/{version}/messages/count_tokens` | POST | Local Anthropic token counting for Amp clients. |
 | `/api/provider/google/{version}/models/{model}:{action}` | POST | Gemini `generateContent`, `streamGenerateContent`, and `countTokens` translated through Copilot. |
-| `/api/*`, `/auth*`, `/threads*`, `/docs*`, `/settings*`, `/news.rss` | Any | Amp management routes proxied to `https://ampcode.com` or `AMP_UPSTREAM_URL`. |
+| `/api/threads/find`, `/api/threads/{id}.md`, `/api/internal`, `/api/telemetry`, `/api/durable-thread-workers/*`, `/api/users/*`, `/api/attachments` | Varies | Handled locally only when `--amp-local` is enabled. |
+| Other `/api/*`, `/auth*`, `/threads*`, `/threads.rss`, `/docs*`, `/settings*`, `/news.rss` | Any | Amp management routes proxied to `https://ampcode.com` or `AMP_UPSTREAM_URL`. |
 
 ## Usage Examples
 
@@ -186,6 +195,11 @@ copilot-api-proxy service uninstall
 | `MIN_TOKENS_LIMIT` | Minimum Anthropic `max_tokens` forwarded upstream | `100` |
 | `AMP_API_KEY` | API key injected when proxying Amp management routes | Amp secrets file or unset |
 | `AMP_UPSTREAM_URL` | Base URL for proxied Amp management routes | `https://ampcode.com` |
+| `AMP_THREADS_DIR` | Override the local Amp thread directory used by `--amp-local` | `~/.local/share/amp/threads` |
+| `JINA_API_KEY` | Optional API key for Jina search/reader backend | Unset |
+| `TAVILY_API_KEY` | API key for `--search-provider tavily` | Unset |
+| `BRAVE_API_KEY` | API key for `--search-provider brave` | Unset |
+| `SEARXNG_URL` | Base URL for `--search-provider searxng` | Unset |
 | `RUST_LOG` | Overrides the logger filter entirely | Unset |
 
 ### Logging
@@ -210,6 +224,29 @@ ANTHROPIC_API_KEY=your-secret-key copilot-api-proxy server
 
 Clients must then provide the key via `x-api-key` or `Authorization: Bearer ...`.
 
+### Amp Local Mode
+
+`--amp-local` serves a subset of Amp management APIs from local data instead of forwarding them upstream:
+
+- `/api/threads/find`
+- `/api/threads/{id}.md`
+- `/api/internal`
+- `/api/telemetry`
+- `/api/durable-thread-workers/*`
+- `/api/users/*`
+- `/api/attachments`
+
+Root-level Amp routes such as `/threads*`, `/auth*`, `/docs*`, `/settings*`, `/threads.rss`, and `/news.rss` are still proxied upstream.
+
+Available search backends for local mode:
+
+- `jina` uses Jina Search + Reader and optionally `JINA_API_KEY`
+- `tavily` requires `TAVILY_API_KEY`
+- `brave` requires `BRAVE_API_KEY` and uses Jina Reader for page extraction
+- `searxng` requires `SEARXNG_URL` and uses Jina Reader for page extraction
+- `model` uses Copilot `/v1/responses` with the `web_search` tool; `--search-model` defaults to `gpt-5-mini`
+- `none` disables web search/page extraction
+
 ## How It Works
 
 1. `auth` runs GitHub's OAuth device flow and stores the GitHub token locally.
@@ -217,7 +254,7 @@ Clients must then provide the key via `x-api-key` or `Authorization: Bearer ...`
 3. `TokenManager` refreshes the Copilot token in the background before expiry.
 4. OpenAI-compatible `/v1/*` requests are forwarded to `api.individual.githubcopilot.com` with Copilot headers injected.
 5. Anthropic and Gemini compatibility routes translate request and response formats around the same Copilot upstream.
-6. Amp provider routes are handled locally when supported; Amp management routes are proxied to `ampcode.com`.
+6. Amp provider routes are handled locally when supported; Amp management routes are proxied to `ampcode.com`, except for the `--amp-local` `/api/*` subset above.
 
 ### Sticky Inference
 

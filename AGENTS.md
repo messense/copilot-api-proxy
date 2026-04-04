@@ -12,7 +12,7 @@
 
 - Keep OpenAI-compatible routes as raw-byte passthrough whenever possible.
 - Do protocol translation only on explicit compatibility surfaces such as `/v1/messages`, `/v1/messages/count_tokens`, and Amp Anthropic / Gemini provider routes.
-- Proxy Amp management traffic to `ampcode.com` unchanged except for optional API-key injection.
+- Proxy Amp management traffic to `ampcode.com` by default, except for the optional local `/api/*` subset in `--amp-local` mode.
 - Limit request inspection to the minimum needed for sticky inference and vision detection.
 
 ---
@@ -34,8 +34,14 @@ cargo run -- server
 # Run on custom port
 cargo run -- server --port 8080
 
-# Enable local Amp API mode (no ampcode.com dependency)
+# Enable local Amp API handlers backed by local thread data
 cargo run -- server --amp-local
+
+# Local Amp mode with an explicit search backend
+cargo run -- server --amp-local --search-provider jina
+
+# Local Amp mode using Copilot Responses API web search
+cargo run -- server --amp-local --search-provider model --search-model gpt-5-mini
 
 # Increase log verbosity
 cargo run -- server --log-level debug
@@ -103,6 +109,15 @@ export ANTHROPIC_API_KEY=your-secret-key
 # Override Amp management upstream
 export AMP_UPSTREAM_URL=https://ampcode.com
 
+# Override local Amp thread storage path
+export AMP_THREADS_DIR=~/.local/share/amp/threads
+
+# Search backend credentials for --amp-local
+export JINA_API_KEY=your_jina_api_key
+export TAVILY_API_KEY=your_tavily_api_key
+export BRAVE_API_KEY=your_brave_api_key
+export SEARXNG_URL=http://localhost:8080
+
 # Override logging completely
 export RUST_LOG=copilot_api_proxy=debug,tower_http=debug
 ```
@@ -130,8 +145,8 @@ Axum Router
            +-- /api/provider/openai/* -> generic Copilot passthrough
            +-- /api/provider/anthropic/* -> Claude compatibility conversion
            +-- /api/provider/google/* -> Gemini compatibility conversion
-           '-- other /api/*, /threads*, /auth*, /docs*, /settings* -> ampcode.com proxy
-                (or local handlers when --amp-local is enabled)
+           +-- selected /api/* management routes -> local handlers when --amp-local is enabled
+           '-- remaining /api/*, /threads*, /auth*, /docs*, /settings* -> ampcode.com proxy
 ```
 
 ### Key Architectural Decisions
@@ -143,7 +158,8 @@ Axum Router
 5. **Token refresh is background-managed**. `TokenManager` owns the Copilot token lifecycle and refreshes automatically.
 6. **Response forwarding is unified**. `forward_response()` handles both buffered and SSE responses while stripping hop-by-hop headers.
 7. **The server enforces a 10 MiB body limit** with `RequestBodyLimitLayer` and enables request tracing with `TraceLayer`.
-8. **Local Amp mode is opt-in**. `--amp-local` enables `src/amp_local.rs` which serves thread search, markdown export, telemetry, labels, and user info from local `~/.local/share/amp/threads/` data instead of proxying to ampcode.com.
+8. **Local Amp mode is opt-in and limited to part of `/api/*`**. `--amp-local` enables `src/amp_local.rs` for thread search, markdown export, internal RPCs, telemetry, labels, attachments, durable thread workers, and user info backed by local Amp data. Root-level `/threads*`, `/auth*`, `/docs*`, `/settings*`, and RSS routes still proxy upstream.
+9. **Amp local web search is pluggable**. `--search-provider` selects `jina`, `tavily`, `brave`, `searxng`, `model`, or `none`; `--search-model` applies when the provider is `model` and defaults to `gpt-5-mini`.
 
 ### Module Structure
 
@@ -240,7 +256,7 @@ The flow is:
 
 **File**: `src/amp.rs`
 
-Amp management traffic is not handled locally. The proxy forwards these routes to Amp upstream:
+By default, Amp management traffic is proxied to Amp upstream on these routes:
 
 - `/api/*` when the path is not a supported local provider route
 - `/threads`, `/threads/*`, `/threads.rss`
@@ -254,6 +270,31 @@ Auth handling for this proxy is separate from Copilot auth:
 - `AMP_API_KEY` env var wins if set
 - otherwise `~/.local/share/amp/secrets.json` is consulted
 - when an upstream Amp API key is resolved, incoming auth headers are stripped and replaced
+
+When `--amp-local` is enabled, a subset of `/api/*` management routes is handled locally instead of being proxied:
+
+- `/api/threads/find`
+- `/api/threads/{id}.md`
+- `/api/internal`
+- `/api/telemetry`
+- `/api/durable-thread-workers/*`
+- `/api/users/*`
+- `/api/attachments`
+
+Those handlers use local Amp thread data from `AMP_THREADS_DIR` or `~/.local/share/amp/threads`.
+
+### 4a. Amp Local Search Backends
+
+**Files**: `src/main.rs`, `src/amp_local.rs`, `src/web_backend/*`
+
+`--amp-local` supports pluggable web search/page extraction backends for internal RPC methods such as `webSearch2` and `extractWebPageContent`:
+
+- `jina` uses Jina Search + Reader and optionally `JINA_API_KEY`
+- `tavily` requires `TAVILY_API_KEY`
+- `brave` requires `BRAVE_API_KEY` and falls back to Jina Reader for extraction
+- `searxng` requires `SEARXNG_URL` and falls back to Jina Reader for extraction
+- `model` uses Copilot `/v1/responses` with the `web_search` tool; `--search-model` defaults to `gpt-5-mini`
+- `none` disables web search/page extraction
 
 ### 5. Amp Anthropic Requests Have One Cost-Saving Rewrite
 
