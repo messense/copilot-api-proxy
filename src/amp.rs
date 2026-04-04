@@ -20,7 +20,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::any;
 use axum::Router;
 use reqwest::Client;
@@ -225,6 +225,14 @@ fn amp_local_stub_news_rss() -> Response {
         .into_response()
 }
 
+fn is_browser_route(path: &str) -> bool {
+    matches!(path, "/auth" | "/threads" | "/docs" | "/settings")
+        || path.starts_with("/auth/")
+        || path.starts_with("/threads/")
+        || path.starts_with("/docs/")
+        || path.starts_with("/settings/")
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -335,7 +343,19 @@ async fn management_handler(
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
-    
+
+    if is_browser_route(uri.path()) {
+        let target = format!("{}{}", state.amp_management.upstream_url, pq);
+        tracing::debug!(
+            target: "amp_proxy",
+            method = %method,
+            path = %pq,
+            redirect = %target,
+            "Redirecting browser route to ampcode.com"
+        );
+        return Ok(Redirect::temporary(&target).into_response());
+    }
+
     if state.amp_local.is_some() {
         if uri.path() == "/news.rss" {
             return Ok(amp_local_stub_news_rss());

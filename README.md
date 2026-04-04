@@ -24,7 +24,7 @@ A reverse proxy for GitHub Copilot that exposes OpenAI-compatible `/v1/*` routes
 - OpenAI-compatible passthrough on `/v1/*`
 - Anthropic-compatible `/v1/messages` and `/v1/messages/count_tokens`
 - Amp provider routes for OpenAI, Anthropic, and Gemini clients
-- Amp management proxy by default for `/api/*`, `/threads*`, `/auth*`, `/docs*`, `/settings*`, and RSS routes
+- Amp management proxy by default for `/api/*` and RSS routes, plus browser redirects for `/threads*`, `/auth*`, `/docs*`, and `/settings*`
 - Optional `--amp-local` mode for local `/api/threads/*`, `/api/internal`, telemetry, labels, and user info endpoints, with strict fallback blocking for unsupported Amp routes
 - Pluggable web search backends for Amp local mode: `jina`, `tavily`, `brave`, `searxng`, `model`, or `none`
 - Streaming, tool/function calling, and vision support
@@ -96,7 +96,8 @@ Use `http://localhost:9876` as the base URL for OpenAI-compatible and Anthropic-
 | `/api/provider/google/{version}/models/{model}:{action}` | POST | Gemini `generateContent`, `streamGenerateContent`, and `countTokens` translated through Copilot. |
 | `/api/threads/find`, `/api/threads/{id}.md`, `/api/internal`, `/api/telemetry`, `/api/durable-thread-workers/*`, `/api/users/*`, `/api/attachments` | Varies | Handled locally only when `--amp-local` is enabled. |
 | `/news.rss` | Any | Proxied to Amp upstream by default. Served as a small local RSS stub when `--amp-local` is enabled. |
-| Other unsupported Amp management routes such as `/api/*` fallbacks, `/auth*`, `/threads*`, `/threads.rss`, `/docs*`, and `/settings*` | Any | Proxied to `https://ampcode.com` or `AMP_UPSTREAM_URL` by default. Under `--amp-local`, these routes return `501 Not Implemented` instead of proxying upstream. |
+| Other unsupported Amp management routes such as `/api/*` fallbacks and `/threads.rss` | Any | Proxied to `https://ampcode.com` or `AMP_UPSTREAM_URL` by default. Under `--amp-local`, these routes return `501 Not Implemented` instead of proxying upstream. |
+| Browser-facing root routes such as `/auth*`, `/threads*`, `/docs*`, and `/settings*` | Any | Redirected to `https://ampcode.com` or `AMP_UPSTREAM_URL` so browser cookies stay on the Amp domain, including under `--amp-local`. |
 
 ## Usage Examples
 
