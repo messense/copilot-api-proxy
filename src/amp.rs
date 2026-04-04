@@ -49,6 +49,12 @@ pub struct AmpManagementProxy {
     upstream_url: String,
 }
 
+impl Default for AmpManagementProxy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AmpManagementProxy {
     pub fn new() -> Self {
         let client = Client::builder()
@@ -171,12 +177,25 @@ async fn amp_api_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
-    if let Some(rest) = path.strip_prefix("provider/") {
-        if let Some((provider, provider_path)) = rest.split_once('/') {
+    if let Some(rest) = path.strip_prefix("provider/")
+        && let Some((provider, provider_path)) = rest.split_once('/') {
             return handle_provider(state, method, provider, provider_path, &uri, headers, body)
                 .await;
         }
-    }
+
+    // When amp-local mode is enabled, handle management routes locally
+    if let Some(ref local_state) = state.amp_local
+        && crate::amp_local::should_handle_locally(&path) {
+            return crate::amp_local::handle_local_api(
+                local_state,
+                &method,
+                &path,
+                uri.query(),
+                &headers,
+                &body,
+            )
+            .await;
+        }
 
     // Management route — proxy to ampcode.com
     let pq = uri
@@ -411,8 +430,8 @@ async fn handle_google(
 
 /// Rewrite the "model" field in a JSON request body.
 fn rewrite_model_in_body(body: &Bytes, new_model: &str) -> Bytes {
-    if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) {
-        if let Some(obj) = value.as_object_mut() {
+    if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body)
+        && let Some(obj) = value.as_object_mut() {
             obj.insert(
                 "model".to_string(),
                 serde_json::Value::String(new_model.to_string()),
@@ -421,7 +440,6 @@ fn rewrite_model_in_body(body: &Bytes, new_model: &str) -> Bytes {
                 return Bytes::from(bytes);
             }
         }
-    }
     body.clone()
 }
 

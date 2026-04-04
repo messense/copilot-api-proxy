@@ -462,14 +462,13 @@ fn convert_openai_response_to_gemini(value: &Value, model: &str) -> Value {
 
     let mut parts = Vec::new();
 
-    if let Some(choice) = choice {
-        if let Some(message) = choice.get("message") {
+    if let Some(choice) = choice
+        && let Some(message) = choice.get("message") {
             // Text content
-            if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
-                if !text.is_empty() {
+            if let Some(text) = message.get("content").and_then(|v| v.as_str())
+                && !text.is_empty() {
                     parts.push(serde_json::json!({"text": text}));
                 }
-            }
             // Tool calls → functionCall parts
             if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
                 for tc in tool_calls {
@@ -487,7 +486,6 @@ fn convert_openai_response_to_gemini(value: &Value, model: &str) -> Value {
                 }
             }
         }
-    }
 
     if parts.is_empty() {
         parts.push(serde_json::json!({"text": ""}));
@@ -680,8 +678,8 @@ impl<S> GeminiStreamState<S> {
             }
 
             // Emit text deltas immediately
-            if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
-                if !content.is_empty() {
+            if let Some(content) = delta.get("content").and_then(|v| v.as_str())
+                && !content.is_empty() {
                     let gemini_chunk = serde_json::json!({
                         "candidates": [{
                             "content": {
@@ -694,7 +692,6 @@ impl<S> GeminiStreamState<S> {
                     self.pending
                         .push_back(Bytes::from(format!("data: {gemini_chunk}\n\n")));
                 }
-            }
         }
 
         // Handle finish

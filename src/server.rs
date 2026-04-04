@@ -1,7 +1,9 @@
 //! Axum server: router, handlers, and application state.
 
 use crate::amp::AmpManagementProxy;
+use crate::amp_local::LocalAmpState;
 use crate::auth::TokenManager;
+use crate::web_backend::SearchProvider;
 use crate::claude::{
     convert_claude_request, convert_openai_response, error_from_proxy, validate_anthropic_headers,
 };
@@ -36,17 +38,27 @@ fn analyze_request(path: &str, method: &Method, body: &[u8]) -> Option<RequestAn
 pub struct AppState {
     pub(crate) proxy: Arc<ProxyClient>,
     pub(crate) amp_management: Arc<AmpManagementProxy>,
+    pub(crate) amp_local: Option<Arc<LocalAmpState>>,
 }
 
 impl AppState {
-    pub async fn new() -> Result<Self, Error> {
+    pub async fn new(amp_local: bool, search_provider: SearchProvider) -> Result<Self, Error> {
         let token = crate::config::load_github_token()?;
         let manager = Arc::new(TokenManager::new(token).await?);
         let proxy = Arc::new(ProxyClient::new(manager)?);
         let amp_management = Arc::new(AmpManagementProxy::new());
+        let amp_local_state = if amp_local {
+            Some(Arc::new(LocalAmpState::new(
+                search_provider,
+                Arc::clone(&proxy),
+            )))
+        } else {
+            None
+        };
         Ok(Self {
             proxy,
             amp_management,
+            amp_local: amp_local_state,
         })
     }
 }

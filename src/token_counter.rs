@@ -54,8 +54,8 @@ async fn count_tokens_internal(body: &[u8]) -> Result<u64, Error> {
     let mut total_tokens = count_openai_tokens(&openai_value)?;
 
     // Add tool overhead if tools are present
-    if let Some(tools) = anthropic_value.get("tools").and_then(|v| v.as_array()) {
-        if !tools.is_empty() {
+    if let Some(tools) = anthropic_value.get("tools").and_then(|v| v.as_array())
+        && !tools.is_empty() {
             // Check if any tool starts with "mcp__" (MCP tools don't count)
             let has_mcp_tools = tools.iter().any(|tool| {
                 tool.get("name")
@@ -71,7 +71,6 @@ async fn count_tokens_internal(body: &[u8]) -> Result<u64, Error> {
                 total_tokens += 400;
             }
         }
-    }
 
     // Apply model-specific multiplier
     let multiplier = if model.contains("claude") {

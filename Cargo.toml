@@ -20,6 +20,8 @@ reqwest = { version = "0.13", features = ["form", "json", "stream"] }
 # Serialization (minimal - only for auth responses and error formatting)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_urlencoded = "0.7"
+urlencoding = "2"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }

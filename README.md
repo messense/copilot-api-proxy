@@ -66,6 +66,9 @@ copilot-api-proxy server --port 8080
 
 # With debug logging
 copilot-api-proxy server --log-level debug
+
+# Local Amp mode (no ampcode.com dependency)
+copilot-api-proxy server --amp-local
 ```
 
 ### 3. Point clients at the proxy

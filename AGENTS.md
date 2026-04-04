@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## Project Overview
 
@@ -33,6 +33,9 @@ cargo run -- server
 
 # Run on custom port
 cargo run -- server --port 8080
+
+# Enable local Amp API mode (no ampcode.com dependency)
+cargo run -- server --amp-local
 
 # Increase log verbosity
 cargo run -- server --log-level debug
@@ -128,6 +131,7 @@ Axum Router
            +-- /api/provider/anthropic/* -> Claude compatibility conversion
            +-- /api/provider/google/* -> Gemini compatibility conversion
            '-- other /api/*, /threads*, /auth*, /docs*, /settings* -> ampcode.com proxy
+                (or local handlers when --amp-local is enabled)
 ```
 
 ### Key Architectural Decisions
@@ -139,6 +143,7 @@ Axum Router
 5. **Token refresh is background-managed**. `TokenManager` owns the Copilot token lifecycle and refreshes automatically.
 6. **Response forwarding is unified**. `forward_response()` handles both buffered and SSE responses while stripping hop-by-hop headers.
 7. **The server enforces a 10 MiB body limit** with `RequestBodyLimitLayer` and enables request tracing with `TraceLayer`.
+8. **Local Amp mode is opt-in**. `--amp-local` enables `src/amp_local.rs` which serves thread search, markdown export, telemetry, labels, and user info from local `~/.local/share/amp/threads/` data instead of proxying to ampcode.com.
 
 ### Module Structure
 
@@ -154,8 +159,10 @@ src/
 ├── claude.rs        # Anthropic <-> OpenAI conversion and Anthropic-style errors
 ├── gemini.rs        # Gemini native API <-> OpenAI conversion
 ├── amp.rs           # Amp provider routing and management reverse proxy
+├── amp_local.rs     # Local Amp API handlers (--amp-local mode)
 ├── token_counter.rs # Local token estimation for Anthropic and Gemini routes
-└── error.rs         # Shared internal error enum with OpenAI-style responses
+├── error.rs         # Shared internal error enum with OpenAI-style responses
+└── web_backend/     # Amp web backend components for local mode
 ```
 
 ---

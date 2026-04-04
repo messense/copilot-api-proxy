@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use copilot_api_proxy::{auth, config, server};
+use copilot_api_proxy::{auth, config, server, web_backend::SearchProvider};
 use service_manager::{
     RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager,
     ServiceUninstallCtx,
@@ -28,6 +28,15 @@ enum Commands {
         port: u16,
         #[arg(long, default_value = "info")]
         log_level: String,
+        /// Handle Amp management APIs locally instead of proxying to ampcode.com.
+        /// Serves thread search, markdown export, telemetry, etc. from
+        /// local ~/.local/share/amp/threads/ data.
+        #[arg(long)]
+        amp_local: bool,
+        /// Search backend for web search and page extraction in --amp-local mode.
+        /// Requires --amp-local. Some backends need env vars for API keys.
+        #[arg(long, default_value = "jina", value_parser = clap::value_parser!(SearchProvider))]
+        search_provider: SearchProvider,
     },
     /// Manage the system service
     Service {
@@ -55,7 +64,12 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Auth => run_auth().await,
-        Commands::Server { port, log_level } => run_server(port, &log_level).await,
+        Commands::Server {
+            port,
+            log_level,
+            amp_local,
+            search_provider,
+        } => run_server(port, &log_level, amp_local, search_provider).await,
         Commands::Service { action } => match action {
             ServiceAction::Install { port } => install_service(port),
             ServiceAction::Uninstall => uninstall_service(),
@@ -79,12 +93,16 @@ async fn run_auth() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(port: u16, log_level: &str) -> Result<()> {
+async fn run_server(port: u16, log_level: &str, amp_local: bool, search_provider: SearchProvider) -> Result<()> {
     let filter = format!("copilot_api_proxy={},tower_http={}", log_level, log_level);
     init_tracing(&filter);
 
-    let state = server::AppState::new().await?;
+    let state = server::AppState::new(amp_local, search_provider).await?;
     let app = server::create_router(state);
+
+    if amp_local {
+        tracing::info!("Amp local mode enabled — management APIs served from local thread data");
+    }
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     tracing::info!("Server listening on http://0.0.0.0:{}", port);
