@@ -121,7 +121,7 @@ async fn exchange_token(github_token: &str) -> Result<TokenExchangeResponse, Err
 
 struct CopilotToken {
     token: String,
-    refresh_at: std::time::Instant,
+    refresh_at: std::time::SystemTime,
 }
 
 /// Thread-safe token manager with background refresh
@@ -156,7 +156,7 @@ impl TokenManager {
         let secs = resp.refresh_in.saturating_sub(60).max(1) as u64;
         Ok(CopilotToken {
             token: resp.token,
-            refresh_at: std::time::Instant::now() + std::time::Duration::from_secs(secs),
+            refresh_at: std::time::SystemTime::now() + std::time::Duration::from_secs(secs),
         })
     }
 
@@ -171,10 +171,12 @@ impl TokenManager {
                     None => break,
                 };
 
-                let now = std::time::Instant::now();
-                if refresh_at > now {
-                    tokio::time::sleep(refresh_at - now).await;
+                // Use wall-clock time to handle sleep/wake correctly
+                let now = std::time::SystemTime::now();
+                if let Ok(duration) = refresh_at.duration_since(now) {
+                    tokio::time::sleep(duration).await;
                 }
+                // If refresh_at is in the past (e.g., after sleep), refresh immediately
 
                 match Self::fetch_token(&github_token).await {
                     Ok(new) => {
