@@ -97,6 +97,11 @@ async fn poll_for_token(device_code: &str, interval: u64) -> Result<String, Erro
 struct TokenExchangeResponse {
     token: String,
     refresh_in: i64,
+    /// Map of endpoint labels to their base URLs.
+    /// The key "api" holds the Copilot API base URL, which varies by plan
+    /// (individual, business, enterprise).
+    #[serde(default)]
+    endpoints: std::collections::HashMap<String, String>,
 }
 
 async fn exchange_token(github_token: &str) -> Result<TokenExchangeResponse, Error> {
@@ -121,6 +126,7 @@ async fn exchange_token(github_token: &str) -> Result<TokenExchangeResponse, Err
 
 struct CopilotToken {
     token: String,
+    api_base: String,
     refresh_at: std::time::SystemTime,
 }
 
@@ -151,11 +157,40 @@ impl TokenManager {
             .ok_or_else(|| Error::Auth("No token available".into()))
     }
 
+    pub async fn get_api_base(&self) -> Result<String, Error> {
+        self.copilot_token
+            .read()
+            .await
+            .as_ref()
+            .map(|t| t.api_base.clone())
+            .ok_or_else(|| Error::Auth("No token available".into()))
+    }
+
     async fn fetch_token(github_token: &str) -> Result<CopilotToken, Error> {
         let resp = exchange_token(github_token).await?;
         let secs = resp.refresh_in.saturating_sub(60).max(1) as u64;
+
+        // Extract API base URL from endpoints map, falling back to individual
+        let api_base = match resp.endpoints.get("api") {
+            Some(url) => {
+                let url = url.trim_end_matches('/').to_string();
+                tracing::info!("Copilot API base: {}", url);
+                url
+            }
+            None => {
+                let url = "https://api.individual.githubcopilot.com".to_string();
+                tracing::warn!(
+                    "Token exchange response missing 'api' endpoint, \
+                     falling back to {}",
+                    url
+                );
+                url
+            }
+        };
+
         Ok(CopilotToken {
             token: resp.token,
+            api_base,
             refresh_at: std::time::SystemTime::now() + std::time::Duration::from_secs(secs),
         })
     }

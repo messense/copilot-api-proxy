@@ -9,8 +9,6 @@ use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::sync::Arc;
 
-const COPILOT_API_BASE: &str = "https://api.individual.githubcopilot.com";
-
 const HOP_BY_HOP: &[&str] = &[
     "transfer-encoding",
     "connection",
@@ -48,10 +46,11 @@ impl ProxyClient {
         is_vision: bool,
     ) -> Result<reqwest::Response, Error> {
         let token = self.token_manager.get_token().await?;
+        let api_base = self.token_manager.get_api_base().await?;
 
         let mut req = self
             .client
-            .request(method, format!("{}{}", COPILOT_API_BASE, path))
+            .request(method, format!("{}{}", api_base, path))
             .bearer_auth(&token)
             .headers(copilot_headers(initiator, is_vision));
 
