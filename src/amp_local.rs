@@ -1,15 +1,21 @@
 //! Local Amp API handlers that replace ampcode.com for offline usage.
 //!
-//! This module reads threads from the local Amp data directory
+//! This module manages threads in the local Amp data directory
 //! (`~/.local/share/amp/threads/`) and serves them through the same
 //! API surface that the Amp CLI expects from ampcode.com.
 //!
 //! Supported endpoints:
 //! - `GET  /api/threads/find?q=&limit=&offset=` — full-text search across local threads
 //! - `GET  /api/threads/{id}.md?truncate_tool_results=1` — render thread as markdown
-//! - `POST /api/internal?{method}` — getUserInfo, shareThread, getThreadLabels, setThreadLabels
+//! - `POST /api/internal?uploadThread` — persist full thread JSON to local disk
+//! - `POST /api/internal?setThreadMeta` — merge meta fields on an existing thread
+//! - `POST /api/internal?deleteThread` — remove a thread file from disk
+//! - `POST /api/internal?{method}` — getUserInfo, shareThread, getThreadLabels, setThreadLabels, …
 //! - `POST /api/telemetry` — silently accepted (no-op)
 //! - `POST /api/durable-thread-workers/{id}` — stub response
+//!
+//! The Amp CLI gzip-compresses request bodies larger than ~25 KB.
+//! Thread write handlers transparently decompress when `Content-Encoding: gzip` is set.
 
 use crate::proxy::ProxyClient;
 use crate::web_backend::{self, SearchProvider, WebBackend};
@@ -316,7 +322,7 @@ pub async fn handle_local_api(
     method: &Method,
     path: &str,
     query: Option<&str>,
-    _headers: &HeaderMap,
+    headers: &HeaderMap,
     body: &Bytes,
 ) -> Result<Response, crate::Error> {
     // /api/threads/find?q=&limit=&offset=
@@ -335,7 +341,7 @@ pub async fn handle_local_api(
 
     // /api/internal?method
     if path.starts_with("internal") {
-        return handle_internal_rpc(state, query, body).await;
+        return handle_internal_rpc(state, query, headers, body).await;
     }
 
     // /api/telemetry — accept silently
@@ -730,6 +736,7 @@ fn chrono_format_millis(millis: u64) -> String {
 async fn handle_internal_rpc(
     state: &Arc<LocalAmpState>,
     query: Option<&str>,
+    headers: &HeaderMap,
     body: &Bytes,
 ) -> Result<Response, crate::Error> {
     let method_name = query.unwrap_or("");
@@ -792,12 +799,9 @@ async fn handle_internal_rpc(
         // ── Thread CRUD ─────────────────────────────────────────────
         "getThread" => handle_get_thread(state, body).await,
         "listThreads" => handle_list_threads(state, body).await,
-        "uploadThread" | "setThreadMeta" | "deleteThread" => {
-            // Write operations against the remote thread store.
-            // Threads live on disk; the CLI already writes them locally,
-            // so we just acknowledge.
-            ok_null()
-        }
+        "uploadThread" => handle_upload_thread(state, headers, body).await,
+        "setThreadMeta" => handle_set_thread_meta(state, headers, body).await,
+        "deleteThread" => handle_delete_thread(state, headers, body).await,
         "getThreadLinkInfo" => {
             // Returns info for rendering a thread link preview.
             // No remote store → empty result.
@@ -968,6 +972,285 @@ async fn handle_list_threads(
         })
         .collect();
     Ok(Json(serde_json::json!({"ok": true, "result": { "threads": threads }})).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: decompress body if gzip Content-Encoding is present
+// ---------------------------------------------------------------------------
+
+/// Amp CLI gzip-compresses request bodies larger than ~25 KB.
+/// This helper transparently decompresses when `Content-Encoding: gzip` is set.
+fn maybe_decompress(headers: &HeaderMap, body: &Bytes) -> Result<Vec<u8>, String> {
+    let is_gzip = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("gzip"))
+        .unwrap_or(false);
+
+    if !is_gzip {
+        return Ok(body.to_vec());
+    }
+
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    let mut decoder = GzDecoder::new(&body[..]);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|e| format!("gzip decompression failed: {}", e))?;
+    Ok(decompressed)
+}
+
+fn parse_rpc_body(
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<serde_json::Value, Response> {
+    let raw = maybe_decompress(headers, body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": e}})),
+        )
+            .into_response()
+    })?;
+    serde_json::from_slice(&raw).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": format!("invalid JSON: {}", e)}})),
+        )
+            .into_response()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Handler: uploadThread — persist full thread JSON to disk
+// ---------------------------------------------------------------------------
+
+async fn handle_upload_thread(
+    state: &Arc<LocalAmpState>,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<Response, crate::Error> {
+    let parsed = match parse_rpc_body(headers, body) {
+        Ok(v) => v,
+        Err(r) => return Ok(r),
+    };
+
+    let params = parsed.get("params").unwrap_or(&parsed);
+    let thread_value = match params.get("thread") {
+        Some(t) if t.is_object() => t,
+        _ => {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "missing params.thread object"}})),
+            )
+                .into_response());
+        }
+    };
+
+    let thread_id = thread_value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if thread_id.is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "thread has no id"}})),
+        )
+            .into_response());
+    }
+
+    // Skip persisting threads with no messages (empty stubs)
+    let has_messages = thread_value
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if !has_messages {
+        tracing::debug!(thread_id = %thread_id, "Skipping empty thread (no messages)");
+        return ok_null();
+    }
+
+    // Ensure the threads directory exists
+    if let Err(e) = tokio::fs::create_dir_all(&state.threads_dir).await {
+        tracing::error!(error = %e, "Failed to create threads directory");
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"ok": false, "error": {"code": "io-error", "message": format!("failed to create threads dir: {}", e)}})),
+        )
+            .into_response());
+    }
+
+    let path = state.threads_dir.join(format!("{}.json", thread_id));
+    let data = serde_json::to_vec(thread_value).unwrap_or_default();
+    if let Err(e) = tokio::fs::write(&path, &data).await {
+        tracing::error!(thread_id = %thread_id, error = %e, "Failed to write thread file");
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"ok": false, "error": {"code": "io-error", "message": format!("failed to write thread: {}", e)}})),
+        )
+            .into_response());
+    }
+
+    tracing::debug!(thread_id = %thread_id, size = data.len(), "Wrote thread to disk");
+    // Invalidate the in-memory index so the next search picks up the change
+    *state.last_indexed.write().await =
+        std::time::Instant::now() - std::time::Duration::from_secs(3600);
+
+    ok_null()
+}
+
+// ---------------------------------------------------------------------------
+// Handler: setThreadMeta — merge meta fields into an existing thread on disk
+// ---------------------------------------------------------------------------
+
+async fn handle_set_thread_meta(
+    state: &Arc<LocalAmpState>,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<Response, crate::Error> {
+    let parsed = match parse_rpc_body(headers, body) {
+        Ok(v) => v,
+        Err(r) => return Ok(r),
+    };
+
+    let params = parsed.get("params").unwrap_or(&parsed);
+    let thread_id = params
+        .get("thread")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if thread_id.is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "missing thread id"}})),
+        )
+            .into_response());
+    }
+
+    let new_meta = match params.get("meta") {
+        Some(m) if m.is_object() => m,
+        _ => {
+            // Nothing to set — just ack
+            return ok_null();
+        }
+    };
+
+    let path = state.threads_dir.join(format!("{}.json", thread_id));
+    let data = match tokio::fs::read(&path).await {
+        Ok(d) => d,
+        Err(_) => {
+            return Ok(Json(serde_json::json!({
+                "ok": false,
+                "error": { "code": "thread-not-found", "message": format!("Thread {} not found", thread_id) }
+            }))
+            .into_response());
+        }
+    };
+
+    let mut thread: serde_json::Value = match serde_json::from_slice(&data) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(thread_id = %thread_id, error = %e, "Failed to parse thread for setThreadMeta");
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"ok": false, "error": {"code": "parse-error", "message": format!("failed to parse thread: {}", e)}})),
+            )
+                .into_response());
+        }
+    };
+
+    // Merge new_meta into thread.meta (create if absent)
+    if let Some(obj) = thread.as_object_mut() {
+        let existing_meta = obj
+            .entry("meta")
+            .or_insert_with(|| serde_json::json!({}));
+        if let (Some(existing), Some(new)) = (existing_meta.as_object_mut(), new_meta.as_object()) {
+            for (k, v) in new {
+                existing.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    let updated = serde_json::to_vec(&thread).unwrap_or_default();
+    if let Err(e) = tokio::fs::write(&path, &updated).await {
+        tracing::error!(thread_id = %thread_id, error = %e, "Failed to write thread after setThreadMeta");
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"ok": false, "error": {"code": "io-error", "message": format!("failed to write thread: {}", e)}})),
+        )
+            .into_response());
+    }
+
+    tracing::debug!(thread_id = %thread_id, "Updated thread meta on disk");
+    *state.last_indexed.write().await =
+        std::time::Instant::now() - std::time::Duration::from_secs(3600);
+
+    ok_null()
+}
+
+// ---------------------------------------------------------------------------
+// Handler: deleteThread — remove thread file from disk
+// ---------------------------------------------------------------------------
+
+async fn handle_delete_thread(
+    state: &Arc<LocalAmpState>,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<Response, crate::Error> {
+    let parsed = match parse_rpc_body(headers, body) {
+        Ok(v) => v,
+        Err(r) => return Ok(r),
+    };
+
+    let params = parsed.get("params").unwrap_or(&parsed);
+    let thread_id = params
+        .get("thread")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if thread_id.is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "missing thread id"}})),
+        )
+            .into_response());
+    }
+
+    let path = state.threads_dir.join(format!("{}.json", thread_id));
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => {
+            tracing::debug!(thread_id = %thread_id, "Deleted thread from disk");
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Already gone — not an error (matches Amp behavior)
+            tracing::debug!(thread_id = %thread_id, "Thread file already absent");
+        }
+        Err(e) => {
+            tracing::error!(thread_id = %thread_id, error = %e, "Failed to delete thread file");
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"ok": false, "error": {"code": "io-error", "message": format!("failed to delete thread: {}", e)}})),
+            )
+                .into_response());
+        }
+    }
+
+    // Also clean up labels for this thread
+    let labels_path = amp_data_dir().join("labels.json");
+    if let Ok(data) = tokio::fs::read(&labels_path).await {
+        if let Ok(mut all) = serde_json::from_slice::<serde_json::Value>(&data) {
+            if let Some(obj) = all.as_object_mut() {
+                if obj.remove(thread_id).is_some() {
+                    if let Ok(updated) = serde_json::to_vec_pretty(&all) {
+                        let _ = tokio::fs::write(&labels_path, updated).await;
+                    }
+                }
+            }
+        }
+    }
+
+    *state.last_indexed.write().await =
+        std::time::Instant::now() - std::time::Duration::from_secs(3600);
+
+    ok_null()
 }
 
 /// Handle `addThreadLabels` — append labels to existing set.
