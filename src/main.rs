@@ -24,6 +24,8 @@ enum Commands {
     Auth,
     /// Start the proxy server
     Server {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
         #[arg(short, long, default_value = "9876")]
         port: u16,
         #[arg(long, default_value = "info")]
@@ -70,12 +72,13 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Auth => run_auth().await,
         Commands::Server {
+            host,
             port,
             log_level,
             amp_local,
             search_provider,
             search_model,
-        } => run_server(port, &log_level, amp_local, search_provider, search_model).await,
+        } => run_server(&host, port, &log_level, amp_local, search_provider, search_model).await,
         Commands::Service { action } => match action {
             ServiceAction::Install { port } => install_service(port),
             ServiceAction::Uninstall => uninstall_service(),
@@ -100,6 +103,7 @@ async fn run_auth() -> Result<()> {
 }
 
 async fn run_server(
+    host: &str,
     port: u16,
     log_level: &str,
     amp_local: bool,
@@ -121,8 +125,8 @@ async fn run_server(
         tracing::info!("Amp local mode enabled — management APIs served from local thread data");
     }
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    tracing::info!("Server listening on http://0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await?;
+    tracing::info!("Server listening on http://{}:{}", host, port);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
