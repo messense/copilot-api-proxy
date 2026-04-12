@@ -7,24 +7,16 @@
 //! Provider requests are handled locally through Copilot (OpenAI + Anthropic).
 //! Unknown providers and management requests are proxied to ampcode.com.
 
-use crate::claude::{
-    analyze_claude_request, convert_claude_request, convert_openai_response, error_from_proxy,
-    extract_anthropic_model, is_native_claude_model,
-};
+use crate::claude::{analyze_claude_request, convert_claude_request, error_from_proxy};
 use crate::error::Error;
-use crate::gemini::{
-    convert_gemini_request, convert_openai_to_gemini_response, handle_gemini_count_tokens,
-    parse_gemini_action,
-};
-use crate::initiator::{
-    RequestAnalysis, analyze_openai_chat_completions, analyze_openai_responses,
-};
+use crate::gemini::{handle_gemini_count_tokens, parse_gemini_action};
+use crate::llm;
 use crate::proxy::forward_response;
 use crate::server::AppState;
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{OriginalUri, Path, State};
+use axum::extract::{OriginalUri, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::any;
@@ -243,11 +235,9 @@ fn is_browser_route(path: &str) -> bool {
 // Routes
 // ---------------------------------------------------------------------------
 
-/// Create Amp routes to merge into the main router.
-pub fn routes() -> Router<AppState> {
+/// Create root-level Amp routes to merge into the main router.
+pub fn root_routes() -> Router<AppState> {
     Router::new()
-        // All /api/* requests (provider inference + management)
-        .route("/api/{*path}", any(amp_api_handler))
         // Root-level management routes that Amp CLI expects
         .route("/threads", any(management_handler))
         .route("/threads/{*path}", any(management_handler))
@@ -265,12 +255,12 @@ pub fn routes() -> Router<AppState> {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// Dispatch `/api/*` requests: provider routes go to Copilot, rest to ampcode.com.
-async fn amp_api_handler(
-    State(state): State<AppState>,
+/// Dispatch Amp `/api/*` requests: provider routes go to Copilot, rest to ampcode.com.
+pub async fn handle_api_request(
+    state: AppState,
     method: Method,
-    Path(path): Path<String>,
-    OriginalUri(uri): OriginalUri,
+    path: &str,
+    uri: &Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
@@ -328,7 +318,7 @@ async fn amp_api_handler(
 
     // Management route — proxy to ampcode.com
     tracing::debug!(
-        target: "amp_proxy",
+    target: "amp_proxy",
         path = %path,
         "Proxying management route to ampcode.com"
     );
@@ -439,23 +429,7 @@ async fn handle_openai(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
-    let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
-    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
-
-    let analysis = analyze_request(api_path, &method, &body);
-
-    let resp = state
-        .proxy
-        .forward(
-            &format!("/{}{}", api_path, query),
-            method,
-            body,
-            content_type,
-            analysis.map(|a| a.initiator),
-            analysis.map(|a| a.is_vision).unwrap_or(false),
-        )
-        .await?;
-    forward_response(resp).await
+    llm::handle_openai_passthrough(&state, method, api_path, uri.query(), &headers, body).await
 }
 
 /// Handle Anthropic/Claude provider requests: convert to OpenAI, forward via Copilot.
@@ -467,114 +441,34 @@ async fn handle_anthropic(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
-    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
-    let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
+    if api_path == "messages" && method == Method::POST {
+        let metadata = match analyze_claude_request(&body) {
+            Ok(m) => m,
+            Err(e) => return Ok(error_from_proxy(e)),
+        };
 
-    match api_path {
-        "messages/count_tokens" if method == Method::POST => {
-            if let Some(model) = extract_anthropic_model(&body)
-                && is_native_claude_model(&model)
-            {
-                let resp = match state
-                    .proxy
-                    .forward(
-                        &format!("/v1/messages/count_tokens{query}"),
-                        method,
-                        body,
-                        content_type,
-                        None,
-                        false,
-                    )
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => return Ok(error_from_proxy(e)),
-                };
-                return forward_response(resp).await;
-            }
-            crate::token_counter::handle_count_tokens(body).await
-        }
-        "messages" if method == Method::POST => {
-            let metadata = match analyze_claude_request(&body) {
-                Ok(m) => m,
-                Err(e) => return Ok(error_from_proxy(e)),
-            };
-
-            // No validate_anthropic_headers for Amp path — auth is handled differently
-            // Keep the existing cost-saving rewrite path for lightweight user-initiated haiku.
-            let use_haiku_rewrite = !metadata.stream
-                && metadata.initiator == "user"
-                && metadata.model.to_lowercase().contains("haiku");
-            if is_native_claude_model(&metadata.model) && !use_haiku_rewrite {
-                let resp = match state
-                    .proxy
-                    .forward(
-                        &format!("/v1/messages{query}"),
-                        method,
-                        body,
-                        content_type,
-                        Some(&metadata.initiator),
-                        metadata.is_vision,
-                    )
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => return Ok(error_from_proxy(e)),
-                };
-                return forward_response(resp).await;
-            }
-
+        let use_haiku_rewrite = !metadata.stream
+            && metadata.initiator == "user"
+            && metadata.model.to_lowercase().contains("haiku");
+        if use_haiku_rewrite {
             let mut converted = match convert_claude_request(body) {
                 Ok(c) => c,
                 Err(e) => return Ok(error_from_proxy(e)),
             };
-
-            // Use a free model for lightweight non-streaming haiku requests
-            // (e.g. titling) to avoid consuming premium Copilot requests.
-            if !converted.stream
-                && converted.initiator == "user"
-                && converted.model.contains("haiku")
-            {
-                converted.body = rewrite_model_in_body(&converted.body, "gpt-5-mini");
-            }
-
-            let resp = match state
-                .proxy
-                .forward(
-                    &format!("/chat/completions{}", query),
-                    method,
-                    converted.body,
-                    Some("application/json"),
-                    Some(&converted.initiator),
-                    converted.is_vision,
-                )
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => return Ok(error_from_proxy(e)),
-            };
-            match convert_openai_response(resp, converted.model, converted.stream).await {
-                Ok(r) => Ok(r),
-                Err(e) => Ok(error_from_proxy(e)),
-            }
-        }
-        _ => {
-            // Other anthropic endpoints (models, etc.) — forward through Copilot
-            let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
-            let resp = state
-                .proxy
-                .forward(
-                    &format!("/{}{}", api_path, query),
-                    method,
-                    body,
-                    content_type,
-                    None,
-                    false,
-                )
-                .await?;
-            forward_response(resp).await
+            converted.body = rewrite_model_in_body(&converted.body, "gpt-5-mini");
+            return llm::handle_openai_passthrough(
+                &state,
+                method,
+                "chat/completions",
+                uri.query(),
+                &headers,
+                converted.body,
+            )
+            .await;
         }
     }
+
+    llm::handle_anthropic_compat(&state, method, api_path, uri.query(), &headers, body, false).await
 }
 
 /// Handle Google/Gemini provider requests: convert Gemini native API to OpenAI,
@@ -587,38 +481,20 @@ async fn handle_google(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
-    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
-
     // generateContent / streamGenerateContent
     if let Some((model, action)) = parse_gemini_action(api_path) {
         match action {
             "generateContent" | "streamGenerateContent" => {
                 let stream = action == "streamGenerateContent";
-                let converted = match convert_gemini_request(model, body, stream) {
-                    Ok(c) => c,
-                    Err(e) => return Ok(error_from_proxy(e)),
-                };
-                let resp = match state
-                    .proxy
-                    .forward(
-                        &format!("/chat/completions{}", query),
-                        method,
-                        converted.body,
-                        Some("application/json"),
-                        Some(converted.initiator),
-                        converted.is_vision,
-                    )
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => return Ok(error_from_proxy(e)),
-                };
-                match convert_openai_to_gemini_response(resp, converted.model, converted.stream)
-                    .await
-                {
-                    Ok(r) => Ok(r),
-                    Err(e) => Ok(error_from_proxy(e)),
-                }
+                llm::handle_gemini_generate_content(
+                    &state,
+                    method,
+                    model,
+                    uri.query(),
+                    body,
+                    stream,
+                )
+                .await
             }
             "countTokens" => handle_gemini_count_tokens(model, body).await,
             _ => {
@@ -676,16 +552,4 @@ fn rewrite_model_in_body(body: &Bytes, new_model: &str) -> Bytes {
         }
     }
     body.clone()
-}
-
-/// Analyze request body for initiator and vision detection (same logic as server.rs).
-fn analyze_request(path: &str, method: &Method, body: &[u8]) -> Option<RequestAnalysis> {
-    if *method != Method::POST {
-        return None;
-    }
-    match path {
-        "chat/completions" => Some(analyze_openai_chat_completions(body)),
-        "responses" => Some(analyze_openai_responses(body)),
-        _ => None,
-    }
 }

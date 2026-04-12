@@ -954,4 +954,30 @@ mod tests {
         assert_eq!(params["type"], "object");
         assert_eq!(params["properties"]["summary"]["type"], "string");
     }
+
+    #[test]
+    fn test_stream_state_emits_sse_data_frames() {
+        let upstream = futures::stream::empty::<Result<Bytes, std::io::Error>>();
+        let mut state = GeminiStreamState::new(upstream, "gemini-3.1-pro-preview".to_string());
+
+        state.push_bytes(Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+        ));
+        state.push_bytes(Bytes::from(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\n",
+        ));
+
+        let text_chunk = state.pending.pop_front().expect("missing text chunk");
+        let text_chunk = std::str::from_utf8(&text_chunk).unwrap();
+        assert!(text_chunk.starts_with("data: "));
+        assert!(text_chunk.contains("\"text\":\"ok\""));
+        assert!(text_chunk.contains("\"modelVersion\":\"gemini-3.1-pro-preview\""));
+
+        let finish_chunk = state.pending.pop_front().expect("missing finish chunk");
+        let finish_chunk = std::str::from_utf8(&finish_chunk).unwrap();
+        assert!(finish_chunk.starts_with("data: "));
+        assert!(finish_chunk.contains("\"finishReason\":\"STOP\""));
+        assert!(finish_chunk.contains("\"promptTokenCount\":2"));
+        assert!(finish_chunk.contains("\"candidatesTokenCount\":1"));
+    }
 }

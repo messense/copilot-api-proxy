@@ -3,16 +3,11 @@
 use crate::amp::AmpManagementProxy;
 use crate::amp_local::LocalAmpState;
 use crate::auth::TokenManager;
-use crate::claude::{
-    analyze_claude_request, convert_claude_request, convert_openai_response, error_from_proxy,
-    extract_anthropic_model, is_native_claude_model, validate_anthropic_headers,
-};
+use crate::droid::DroidManagementProxy;
+use crate::droid_local::LocalDroidState;
 use crate::error::Error;
-use crate::initiator::{
-    RequestAnalysis, analyze_openai_chat_completions, analyze_openai_responses,
-};
-use crate::proxy::{ProxyClient, forward_response};
-use crate::token_counter::handle_count_tokens;
+use crate::llm;
+use crate::proxy::ProxyClient;
 use crate::web_backend::SearchProvider;
 use axum::Router;
 use axum::body::Bytes;
@@ -22,29 +17,19 @@ use axum::response::Response;
 use axum::routing::any;
 use std::sync::Arc;
 
-/// Analyze request body for initiator and vision detection.
-/// Returns analysis for chat/responses endpoints, None for others.
-fn analyze_request(path: &str, method: &Method, body: &[u8]) -> Option<RequestAnalysis> {
-    if method != Method::POST {
-        return None;
-    }
-    match path {
-        "chat/completions" => Some(analyze_openai_chat_completions(body)),
-        "responses" => Some(analyze_openai_responses(body)),
-        _ => None,
-    }
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) proxy: Arc<ProxyClient>,
     pub(crate) amp_management: Arc<AmpManagementProxy>,
     pub(crate) amp_local: Option<Arc<LocalAmpState>>,
+    pub(crate) droid_management: Arc<DroidManagementProxy>,
+    pub(crate) droid_local: Option<Arc<LocalDroidState>>,
 }
 
 impl AppState {
     pub async fn new(
         amp_local: bool,
+        droid_local: bool,
         search_provider: SearchProvider,
         search_model: Option<String>,
     ) -> Result<Self, Error> {
@@ -61,10 +46,18 @@ impl AppState {
         } else {
             None
         };
+        let droid_management = Arc::new(DroidManagementProxy::new());
+        let droid_local_state = if droid_local {
+            Some(Arc::new(LocalDroidState::new()))
+        } else {
+            None
+        };
         Ok(Self {
             proxy,
             amp_management,
             amp_local: amp_local_state,
+            droid_management,
+            droid_local: droid_local_state,
         })
     }
 }
@@ -72,7 +65,8 @@ impl AppState {
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/{*path}", any(proxy_handler))
-        .merge(crate::amp::routes())
+        .merge(crate::api::routes())
+        .merge(crate::amp::root_routes())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             10 * 1024 * 1024,
@@ -88,113 +82,18 @@ async fn proxy_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
-    let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
-    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
-
-    // Special case: Anthropic token counting
-    if path == "messages/count_tokens" {
-        if method != Method::POST {
-            return Ok(error_from_proxy(Error::InvalidRequest(
-                "Only POST is supported for /v1/messages/count_tokens".to_string(),
-            )));
-        }
-        if let Some(model) = extract_anthropic_model(&body)
-            && is_native_claude_model(&model)
-        {
-            let resp = match state
-                .proxy
-                .forward(
-                    &format!("/v1/messages/count_tokens{query}"),
-                    method,
-                    body,
-                    content_type,
-                    None,
-                    false,
-                )
-                .await
-            {
-                Ok(resp) => resp,
-                Err(err) => return Ok(error_from_proxy(err)),
-            };
-            return forward_response(resp).await;
-        }
-        return handle_count_tokens(body).await;
-    }
-
-    if path == "messages" {
-        if method != Method::POST {
-            return Ok(error_from_proxy(Error::InvalidRequest(
-                "Only POST is supported for /v1/messages".to_string(),
-            )));
-        }
-
-        if let Some(resp) = validate_anthropic_headers(&headers) {
-            return Ok(resp);
-        }
-
-        let metadata = match analyze_claude_request(&body) {
-            Ok(metadata) => metadata,
-            Err(err) => return Ok(error_from_proxy(err)),
-        };
-        if is_native_claude_model(&metadata.model) {
-            let resp = match state
-                .proxy
-                .forward(
-                    &format!("/v1/messages{}", query),
-                    method,
-                    body,
-                    content_type,
-                    Some(&metadata.initiator),
-                    metadata.is_vision,
-                )
-                .await
-            {
-                Ok(resp) => resp,
-                Err(err) => return Ok(error_from_proxy(err)),
-            };
-            return forward_response(resp).await;
-        }
-
-        let converted = match convert_claude_request(body) {
-            Ok(converted) => converted,
-            Err(err) => return Ok(error_from_proxy(err)),
-        };
-        let resp = match state
-            .proxy
-            .forward(
-                &format!("/chat/completions{}", query),
-                method,
-                converted.body,
-                Some("application/json"),
-                Some(&converted.initiator),
-                converted.is_vision,
-            )
-            .await
-        {
-            Ok(resp) => resp,
-            Err(err) => return Ok(error_from_proxy(err)),
-        };
-        let response = match convert_openai_response(resp, converted.model, converted.stream).await
-        {
-            Ok(response) => response,
-            Err(err) => return Ok(error_from_proxy(err)),
-        };
-        return Ok(response);
-    }
-
-    // Analyze request for initiator and vision detection
-    let analysis = analyze_request(&path, &method, &body);
-
-    let resp = state
-        .proxy
-        .forward(
-            &format!("/{}{}", path, query),
+    if path == "messages" || path == "messages/count_tokens" {
+        return llm::handle_anthropic_compat(
+            &state,
             method,
+            &path,
+            uri.query(),
+            &headers,
             body,
-            content_type,
-            analysis.map(|a| a.initiator),
-            analysis.map(|a| a.is_vision).unwrap_or(false),
+            true,
         )
-        .await?;
-    forward_response(resp).await
+        .await;
+    }
+
+    llm::handle_openai_passthrough(&state, method, &path, uri.query(), &headers, body).await
 }

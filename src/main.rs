@@ -35,6 +35,10 @@ enum Commands {
         /// local ~/.local/share/amp/threads/ data.
         #[arg(long)]
         amp_local: bool,
+        /// Handle Droid control-plane APIs locally instead of proxying to Factory.
+        /// LLM calls are still handled locally in both modes.
+        #[arg(long)]
+        droid_local: bool,
         /// Search backend for web search and page extraction in --amp-local mode.
         /// Requires --amp-local. Some backends need env vars for API keys.
         #[arg(long, default_value = "jina", value_parser = clap::value_parser!(SearchProvider))]
@@ -76,9 +80,21 @@ async fn main() -> Result<()> {
             port,
             log_level,
             amp_local,
+            droid_local,
             search_provider,
             search_model,
-        } => run_server(&host, port, &log_level, amp_local, search_provider, search_model).await,
+        } => {
+            run_server(
+                &host,
+                port,
+                &log_level,
+                amp_local,
+                droid_local,
+                search_provider,
+                search_model,
+            )
+            .await
+        }
         Commands::Service { action } => match action {
             ServiceAction::Install { port } => install_service(port),
             ServiceAction::Uninstall => uninstall_service(),
@@ -107,6 +123,7 @@ async fn run_server(
     port: u16,
     log_level: &str,
     amp_local: bool,
+    droid_local: bool,
     search_provider: SearchProvider,
     search_model: String,
 ) -> Result<()> {
@@ -118,11 +135,14 @@ async fn run_server(
     } else {
         None
     };
-    let state = server::AppState::new(amp_local, search_provider, model_opt).await?;
+    let state = server::AppState::new(amp_local, droid_local, search_provider, model_opt).await?;
     let app = server::create_router(state);
 
     if amp_local {
         tracing::info!("Amp local mode enabled — management APIs served from local thread data");
+    }
+    if droid_local {
+        tracing::info!("Droid local mode enabled — Factory control-plane APIs served locally");
     }
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await?;

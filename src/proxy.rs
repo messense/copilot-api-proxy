@@ -49,7 +49,16 @@ impl ProxyClient {
         let api_base = self.token_manager.get_api_base().await?;
 
         let resp = self
-            .send_request(&api_base, path, method.clone(), &body, content_type, &token, initiator, is_vision)
+            .send_request(
+                &api_base,
+                path,
+                method.clone(),
+                &body,
+                content_type,
+                &token,
+                initiator,
+                is_vision,
+            )
             .await?;
 
         // On 401, force-refresh the Copilot token and retry once (handles sleep/wake expiry)
@@ -59,7 +68,16 @@ impl ProxyClient {
                 let new_token = self.token_manager.get_token().await?;
                 let new_api_base = self.token_manager.get_api_base().await?;
                 return self
-                    .send_request(&new_api_base, path, method, &body, content_type, &new_token, initiator, is_vision)
+                    .send_request(
+                        &new_api_base,
+                        path,
+                        method,
+                        &body,
+                        content_type,
+                        &new_token,
+                        initiator,
+                        is_vision,
+                    )
                     .await;
             }
         }
