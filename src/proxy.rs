@@ -96,6 +96,20 @@ impl ProxyClient {
         initiator: Option<&str>,
         is_vision: bool,
     ) -> Result<reqwest::Response, Error> {
+        let resolved_initiator = if initiator == Some("agent") {
+            "agent"
+        } else {
+            "user"
+        };
+        crate::server::record_initiator(resolved_initiator);
+        tracing::debug!(
+            method = %method,
+            path = %path,
+            initiator = %resolved_initiator,
+            vision = is_vision,
+            "upstream"
+        );
+
         let mut req = self
             .client
             .request(method, format!("{}{}", api_base, path))

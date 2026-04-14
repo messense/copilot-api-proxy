@@ -15,7 +15,9 @@ use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
 use axum::routing::any;
+use axum::http::Request;
 use std::sync::Arc;
+use tower_http::trace::MakeSpan;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -62,12 +64,37 @@ impl AppState {
     }
 }
 
+/// Custom span factory that adds an empty `initiator` field to be filled in
+/// later by [`record_initiator`] when the value is known.
+#[derive(Clone)]
+struct CopilotMakeSpan;
+
+impl<B> MakeSpan<B> for CopilotMakeSpan {
+    fn make_span(&mut self, request: &Request<B>) -> tracing::Span {
+        tracing::info_span!(
+            "request",
+            method = %request.method(),
+            uri = %request.uri(),
+            initiator = tracing::field::Empty,
+        )
+    }
+}
+
+/// Record the resolved initiator value into the current request span so it
+/// appears in the TraceLayer's response log line.
+pub fn record_initiator(initiator: &str) {
+    tracing::Span::current().record("initiator", initiator);
+}
+
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/{*path}", any(proxy_handler))
         .merge(crate::api::routes())
         .merge(crate::amp::root_routes())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(CopilotMakeSpan),
+        )
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             10 * 1024 * 1024,
         ))
