@@ -64,8 +64,8 @@ impl AppState {
     }
 }
 
-/// Custom span factory that adds an empty `initiator` field to be filled in
-/// later by [`record_initiator`] when the value is known.
+/// Custom span factory that adds empty `initiator` and `upstream` fields to be
+/// filled in later when the values are known.
 #[derive(Clone)]
 struct CopilotMakeSpan;
 
@@ -76,14 +76,17 @@ impl<B> MakeSpan<B> for CopilotMakeSpan {
             method = %request.method(),
             uri = %request.uri(),
             initiator = tracing::field::Empty,
+            upstream = tracing::field::Empty,
         )
     }
 }
 
-/// Record the resolved initiator value into the current request span so it
-/// appears in the TraceLayer's response log line.
-pub fn record_initiator(initiator: &str) {
-    tracing::Span::current().record("initiator", initiator);
+/// Record the resolved initiator and upstream path into the current request
+/// span so they appear in the TraceLayer's response log line.
+pub fn record_upstream(initiator: &str, path: &str) {
+    let span = tracing::Span::current();
+    span.record("initiator", initiator);
+    span.record("upstream", path);
 }
 
 pub fn create_router(state: AppState) -> Router {

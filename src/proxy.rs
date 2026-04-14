@@ -101,7 +101,7 @@ impl ProxyClient {
         } else {
             "user"
         };
-        crate::server::record_initiator(resolved_initiator);
+        crate::server::record_upstream(resolved_initiator, path);
 
         let mut req = self
             .client
