@@ -388,7 +388,7 @@ Every upstream Copilot request injects headers that emulate the VS Code Copilot 
 - `editor-version: vscode/1.114.0`
 - `editor-plugin-version: copilot-chat/0.26.7`
 - `user-agent: GitHubCopilotChat/0.26.7`
-- `x-github-api-version: 2025-05-01`
+- `x-github-api-version: 2026-01-09`
 - `copilot-integration-id: vscode-chat`
 - `openai-intent: conversation-agent`
 
@@ -507,7 +507,7 @@ Accept: application/json
 editor-version: vscode/1.114.0
 editor-plugin-version: copilot-chat/0.26.7
 user-agent: GitHubCopilotChat/0.26.7
-x-github-api-version: 2025-05-01
+x-github-api-version: 2026-01-09
 ```
 
 Expected response shape:

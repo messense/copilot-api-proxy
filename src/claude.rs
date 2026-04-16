@@ -1107,6 +1107,78 @@ impl StreamConverter {
     }
 }
 
+/// Merge mixed tool_result + text content blocks in user messages.
+/// When a user message contains both tool_result and text blocks,
+/// text blocks are merged into the preceding tool_result's content
+/// to prevent the message from being treated as a fresh user turn.
+/// Returns the modified body if any merging was performed.
+pub fn merge_tool_result_blocks(body: &[u8]) -> Option<Vec<u8>> {
+    let mut value: Value = serde_json::from_slice(body).ok()?;
+    let messages = value.get_mut("messages")?.as_array_mut()?;
+    let mut modified = false;
+
+    for msg in messages.iter_mut() {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "user" {
+            continue;
+        }
+        let blocks = match msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        let has_tool_result = blocks
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some(CONTENT_TOOL_RESULT));
+        let has_text = blocks
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some(CONTENT_TEXT));
+        if !has_tool_result || !has_text {
+            continue;
+        }
+
+        let old_blocks = std::mem::take(blocks);
+        let mut last_tool_result_idx: Option<usize> = None;
+
+        for block in old_blocks {
+            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if block_type == CONTENT_TOOL_RESULT {
+                blocks.push(block);
+                last_tool_result_idx = Some(blocks.len() - 1);
+            } else if block_type == CONTENT_TEXT && last_tool_result_idx.is_some() {
+                let idx = last_tool_result_idx.unwrap();
+                let tool_result = &mut blocks[idx];
+
+                let content = tool_result.get_mut("content");
+                match content {
+                    Some(c) if c.is_array() => {
+                        c.as_array_mut().unwrap().push(block);
+                    }
+                    Some(c) if c.is_string() => {
+                        let existing_text = c.as_str().unwrap().to_string();
+                        *c = serde_json::json!([
+                            {"type": "text", "text": existing_text},
+                            block
+                        ]);
+                    }
+                    _ => {
+                        tool_result["content"] = serde_json::json!([block]);
+                    }
+                }
+                modified = true;
+            } else {
+                blocks.push(block);
+            }
+        }
+    }
+
+    if modified {
+        serde_json::to_vec(&value).ok()
+    } else {
+        None
+    }
+}
+
 fn make_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

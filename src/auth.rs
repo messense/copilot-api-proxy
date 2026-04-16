@@ -112,7 +112,7 @@ async fn exchange_token(github_token: &str) -> Result<TokenExchangeResponse, Err
         .header("editor-version", "vscode/1.114.0")
         .header("editor-plugin-version", "copilot-chat/0.26.7")
         .header("user-agent", "GitHubCopilotChat/0.26.7")
-        .header("x-github-api-version", "2025-05-01")
+        .header("x-github-api-version", "2026-01-09")
         .send()
         .await?
         .json()
@@ -132,7 +132,7 @@ struct CopilotToken {
 
 /// Thread-safe token manager with background refresh
 pub struct TokenManager {
-    github_token: String,
+    pub(crate) github_token: String,
     copilot_token: Arc<RwLock<Option<CopilotToken>>>,
     refresh_handle: JoinHandle<()>,
 }

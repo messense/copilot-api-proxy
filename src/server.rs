@@ -14,7 +14,7 @@ use axum::body::Bytes;
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, Method};
 use axum::response::Response;
-use axum::routing::any;
+use axum::routing::{any, get};
 use axum::http::Request;
 use std::sync::Arc;
 use tower_http::trace::MakeSpan;
@@ -91,6 +91,7 @@ pub fn record_upstream(initiator: &str, path: &str) {
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
+        .route("/v1/usage", get(usage_handler))
         .route("/v1/{*path}", any(proxy_handler))
         .merge(crate::api::routes())
         .merge(crate::amp::root_routes())
@@ -102,6 +103,11 @@ pub fn create_router(state: AppState) -> Router {
             10 * 1024 * 1024,
         ))
         .with_state(state)
+}
+
+async fn usage_handler(State(state): State<AppState>) -> Result<Response, Error> {
+    let resp = state.proxy.fetch_usage().await?;
+    crate::proxy::forward_response(resp).await
 }
 
 async fn proxy_handler(

@@ -23,6 +23,9 @@ const HOP_BY_HOP: &[&str] = &[
 pub struct ProxyClient {
     client: Client,
     token_manager: Arc<TokenManager>,
+    device_id: String,
+    machine_id: String,
+    session_id: String,
 }
 
 impl ProxyClient {
@@ -30,9 +33,15 @@ impl ProxyClient {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
+        let device_id = crate::config::load_vscode_device_id();
+        let machine_id = crate::config::load_vscode_machine_id();
+        let session_id = uuid::Uuid::new_v4().to_string();
         Ok(Self {
             client,
             token_manager,
+            device_id,
+            machine_id,
+            session_id,
         })
     }
 
@@ -85,6 +94,22 @@ impl ProxyClient {
         Ok(resp)
     }
 
+    pub async fn fetch_usage(&self) -> Result<reqwest::Response, Error> {
+        let github_token = &self.token_manager.github_token;
+        let resp = self
+            .client
+            .get("https://api.github.com/copilot_internal/user")
+            .header("Authorization", format!("token {}", github_token))
+            .header("Accept", "application/json")
+            .header("editor-version", "vscode/1.114.0")
+            .header("editor-plugin-version", "copilot-chat/0.26.7")
+            .header("user-agent", "GitHubCopilotChat/0.26.7")
+            .header("x-github-api-version", "2026-01-09")
+            .send()
+            .await?;
+        Ok(resp)
+    }
+
     async fn send_request(
         &self,
         api_base: &str,
@@ -107,7 +132,13 @@ impl ProxyClient {
             .client
             .request(method, format!("{}{}", api_base, path))
             .bearer_auth(token)
-            .headers(copilot_headers(initiator, is_vision));
+            .headers(copilot_headers(
+                &self.device_id,
+                &self.machine_id,
+                &self.session_id,
+                initiator,
+                is_vision,
+            ));
 
         if let Some(ct) = content_type {
             req = req.header("Content-Type", ct);
@@ -117,7 +148,13 @@ impl ProxyClient {
     }
 }
 
-fn copilot_headers(initiator: Option<&str>, is_vision: bool) -> HeaderMap {
+fn copilot_headers(
+    device_id: &str,
+    machine_id: &str,
+    session_id: &str,
+    initiator: Option<&str>,
+    is_vision: bool,
+) -> HeaderMap {
     let mut h = HeaderMap::new();
     h.insert("editor-version", HeaderValue::from_static("vscode/1.114.0"));
     h.insert(
@@ -130,7 +167,7 @@ fn copilot_headers(initiator: Option<&str>, is_vision: bool) -> HeaderMap {
     );
     h.insert(
         "x-github-api-version",
-        HeaderValue::from_static("2025-05-01"),
+        HeaderValue::from_static("2026-01-09"),
     );
     h.insert(
         "copilot-integration-id",
@@ -140,6 +177,23 @@ fn copilot_headers(initiator: Option<&str>, is_vision: bool) -> HeaderMap {
         "openai-intent",
         HeaderValue::from_static("conversation-agent"),
     );
+    if let Ok(val) = HeaderValue::from_str(device_id) {
+        h.insert("editor-device-id", val);
+    }
+
+    // Per-request unique ID, matching the real extension behavior
+    if let Ok(val) = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()) {
+        h.insert("x-request-id", val);
+    }
+
+    // Session context headers sent by the real VSCode Copilot extension.
+    // These are used by the API for rate-limit bucketing and telemetry.
+    if let Ok(val) = HeaderValue::from_str(machine_id) {
+        h.insert("vscode-machineid", val);
+    }
+    if let Ok(val) = HeaderValue::from_str(session_id) {
+        h.insert("vscode-sessionid", val);
+    }
 
     // X-Initiator: "user" consumes premium, "agent" does not
     h.insert(

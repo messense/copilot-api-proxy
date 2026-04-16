@@ -2,7 +2,8 @@
 
 use crate::claude::{
     analyze_claude_request, convert_claude_request, convert_openai_response, error_from_proxy,
-    extract_anthropic_model, is_native_claude_model, validate_anthropic_headers,
+    extract_anthropic_model, is_native_claude_model, merge_tool_result_blocks,
+    validate_anthropic_headers,
 };
 use crate::error::Error;
 use crate::gemini::{convert_gemini_request, convert_openai_to_gemini_response};
@@ -116,12 +117,15 @@ pub async fn handle_anthropic_compat(
                 Err(err) => return Ok(error_from_proxy(err)),
             };
             if is_native_claude_model(&metadata.model) {
+                let forwarded_body = merge_tool_result_blocks(&body)
+                    .map(Bytes::from)
+                    .unwrap_or(body);
                 let resp = match state
                     .proxy
                     .forward(
                         &format!("/v1/messages{}", query),
                         method,
-                        body,
+                        forwarded_body,
                         content_type,
                         Some(&metadata.initiator),
                         metadata.is_vision,

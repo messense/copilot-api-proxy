@@ -37,3 +37,83 @@ pub fn write_token(path: &PathBuf, token: &str) -> Result<(), Error> {
     fs::set_permissions(path, Permissions::from_mode(0o600))?;
     Ok(())
 }
+
+/// Load VSCode device ID from the system-specific path, or generate one.
+pub fn load_vscode_device_id() -> String {
+    let path = vscode_device_id_path();
+    match fs::read_to_string(&path) {
+        Ok(id) => {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // File doesn't exist — generate and persist below
+        }
+        Err(_) => {
+            // Other read error — return ephemeral ID
+            return uuid::Uuid::new_v4().to_string();
+        }
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::write(&path, &id).is_err() {
+        tracing::warn!("Failed to persist device ID to {:?}", path);
+    }
+    id
+}
+
+/// Load VSCode machine ID from the system-specific path, or generate one.
+/// This is sent as the `vscode-machineid` header to the Copilot API.
+pub fn load_vscode_machine_id() -> String {
+    let path = vscode_machine_id_path();
+    match fs::read_to_string(&path) {
+        Ok(id) => {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            return uuid::Uuid::new_v4().to_string();
+        }
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::write(&path, &id).is_err() {
+        tracing::warn!("Failed to persist machine ID to {:?}", path);
+    }
+    id
+}
+
+fn vscode_machine_id_path() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        dirs::home_dir()
+            .expect("No home directory")
+            .join("Library/Application Support/Microsoft/DeveloperTools/machineid")
+    } else {
+        dirs::cache_dir()
+            .expect("No cache directory")
+            .join("Microsoft/DeveloperTools/machineid")
+    }
+}
+
+fn vscode_device_id_path() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        dirs::home_dir()
+            .expect("No home directory")
+            .join("Library/Application Support/Microsoft/DeveloperTools/deviceid")
+    } else {
+        dirs::cache_dir()
+            .expect("No cache directory")
+            .join("Microsoft/DeveloperTools/deviceid")
+    }
+}
