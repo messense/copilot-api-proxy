@@ -78,18 +78,46 @@ impl DroidManagementProxy {
     }
 }
 
+/// Top-level `/api/<segment>` segments that the Droid CLI talks to.
+///
+/// Anything matched here is owned by the Droid branch (proxied to
+/// `FACTORY_UPSTREAM_URL` by default, served locally or 501'd under
+/// `--droid-local`). It must NEVER fall through to the Amp branch and hit
+/// `ampcode.com`.
+///
+/// Inventory verified against the `droid` CLI binary (v0.109.1):
+///   - `cli/whoami`
+///   - `feature-flags`
+///   - `organization/managed-settings`, `organization/agent-readiness-reports`
+///   - `sessions/create`, `sessions/{id}` and its subpaths
+///     (`update-settings`, `update-title`, `message/create`, `droid-status`,
+///     `archive`, `unarchive`, `privacy`, `git-ai/checkpoints`)
+///   - `llm/o/v1/*`, `llm/a/v1/*`, `llm/g/v1/generate`,
+///     `llm/custom/usage`, `llm/failed-requests`
+///   - `daemon/heartbeat`
+///   - `hello`
+///   - `ingest`, `otlp/traces/ingest`         (telemetry; note: NOT under `/api/telemetry/`)
+///   - `integrations/org/check`
+///   - `tools/web-search`, `tools/get-url-contents`, `tools/slack/post-message`
+///   - `v0/computers[...]`, `v0/automations[...]`
 pub fn matches_api_path(path: &str) -> bool {
-    path == "cli"
-        || path.starts_with("cli/")
-        || path == "feature-flags"
-        || path == "organization"
-        || path.starts_with("organization/")
-        || path == "sessions"
-        || path.starts_with("sessions/")
-        || path == "llm"
-        || path.starts_with("llm/")
-        || path == "telemetry"
-        || path.starts_with("telemetry/")
+    let head = path.split('/').next().unwrap_or(path);
+    matches!(
+        head,
+        "cli"
+            | "feature-flags"
+            | "organization"
+            | "sessions"
+            | "llm"
+            | "telemetry"
+            | "daemon"
+            | "hello"
+            | "ingest"
+            | "otlp"
+            | "integrations"
+            | "tools"
+            | "v0"
+    )
 }
 
 pub async fn handle_api_request(
@@ -232,12 +260,30 @@ mod tests {
 
     #[test]
     fn matches_control_plane_paths() {
+        // Confirmed against droid CLI binary v0.109.1.
         assert!(matches_api_path("sessions"));
         assert!(matches_api_path("cli/whoami"));
         assert!(matches_api_path("feature-flags"));
         assert!(matches_api_path("organization/managed-settings"));
+        assert!(matches_api_path("organization/agent-readiness-reports"));
         assert!(matches_api_path("sessions/create"));
+        assert!(matches_api_path("sessions/abc"));
+        assert!(matches_api_path("sessions/abc/archive"));
+        assert!(matches_api_path("sessions/abc/git-ai/checkpoints"));
         assert!(matches_api_path("llm/o/v1/responses"));
+        assert!(matches_api_path("llm/a/v1/messages"));
+        assert!(matches_api_path("llm/g/v1/generate"));
+        assert!(matches_api_path("llm/custom/usage"));
+        assert!(matches_api_path("llm/failed-requests"));
+        assert!(matches_api_path("daemon/heartbeat"));
+        assert!(matches_api_path("hello"));
+        assert!(matches_api_path("ingest"));
+        assert!(matches_api_path("otlp/traces/ingest"));
+        assert!(matches_api_path("integrations/org/check"));
+        assert!(matches_api_path("tools/web-search"));
+        assert!(matches_api_path("v0/computers"));
+        assert!(matches_api_path("v0/automations"));
+        // Older alias still kept for compatibility.
         assert!(matches_api_path("telemetry/cli-ingest"));
     }
 
@@ -246,5 +292,6 @@ mod tests {
         assert!(!matches_api_path("threads/find"));
         assert!(!matches_api_path("internal"));
         assert!(!matches_api_path("provider/openai/v1/responses"));
+        assert!(!matches_api_path("news.rss"));
     }
 }

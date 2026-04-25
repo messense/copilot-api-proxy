@@ -65,6 +65,7 @@ pub async fn handle_local_api(
     body: &Bytes,
 ) -> Result<Response, crate::Error> {
     match (method, path) {
+        // ---- Read endpoints --------------------------------------------
         (&Method::GET, "cli/whoami") => Ok(Json(serde_json::json!({
             "userId": state.user_id,
             "orgId": state.org_id
@@ -76,16 +77,37 @@ pub async fn handle_local_api(
             "settings": {}
         }))
         .into_response()),
+        (&Method::GET, "organization/agent-readiness-reports") => {
+            // CLI uses `?limit=&startAfter=`. Empty page is sufficient.
+            Ok(Json(serde_json::json!({ "reports": [], "hasMore": false })).into_response())
+        }
         (&Method::GET, "feature-flags") => Ok(Json(state.feature_flags()).into_response()),
+        (&Method::GET, "hello") => Ok(Json(serde_json::json!({ "ok": true })).into_response()),
+        (&Method::GET, "integrations/org/check") => Ok(Json(serde_json::json!({
+            "installed": {},
+            "available": []
+        }))
+        .into_response()),
+
+        // ---- Session writes --------------------------------------------
         (&Method::POST, "sessions/create") => Ok(handle_create_session(body)),
         _ if *method == Method::POST && path.ends_with("/update-title") => {
             Ok(handle_update_title(state, path, body))
         }
-        (&Method::POST, "llm/custom/usage")
+        _ if *method == Method::POST && is_session_write(path) => Ok(ok_response()),
+
+        // ---- Telemetry / fire-and-forget POSTs -------------------------
+        // Bare paths used by current droid CLI (v0.109.1+) plus historical
+        // `/api/telemetry/...` aliases kept for backward compatibility.
+        (&Method::POST, "ingest")
+        | (&Method::POST, "otlp/traces/ingest")
+        | (&Method::POST, "daemon/heartbeat")
+        | (&Method::POST, "organization/agent-readiness-reports")
+        | (&Method::POST, "llm/custom/usage")
         | (&Method::POST, "llm/failed-requests")
         | (&Method::POST, "telemetry/cli-ingest")
         | (&Method::POST, "telemetry/otlp/traces/ingest") => Ok(ok_response()),
-        _ if *method == Method::POST && is_session_write(path) => Ok(ok_response()),
+
         _ => Ok(not_implemented(method, path)),
     }
 }
@@ -162,11 +184,24 @@ fn handle_update_title(state: &LocalDroidState, path: &str, body: &Bytes) -> Res
 }
 
 fn is_session_write(path: &str) -> bool {
-    path.starts_with("sessions/")
-        && (path.ends_with("/update-settings")
-            || path.ends_with("/message/create")
-            || path.ends_with("/update-title")
-            || path.ends_with("/droid-status"))
+    let Some(rest) = path.strip_prefix("sessions/") else {
+        return false;
+    };
+    // Strip the `{id}/` segment.
+    let Some((_id, tail)) = rest.split_once('/') else {
+        return false;
+    };
+    matches!(
+        tail,
+        "update-settings"
+            | "message/create"
+            | "update-title"
+            | "droid-status"
+            | "archive"
+            | "unarchive"
+            | "privacy"
+            | "git-ai/checkpoints"
+    )
 }
 
 fn resolve_factory_home() -> PathBuf {
@@ -323,13 +358,21 @@ mod tests {
         assert!(is_session_write("sessions/abc/message/create"));
         assert!(is_session_write("sessions/abc/update-title"));
         assert!(is_session_write("sessions/abc/droid-status"));
+        assert!(is_session_write("sessions/abc/archive"));
+        assert!(is_session_write("sessions/abc/unarchive"));
+        assert!(is_session_write("sessions/abc/privacy"));
+        assert!(is_session_write("sessions/abc/git-ai/checkpoints"));
     }
 
     #[test]
     fn rejects_non_session_write_paths() {
+        assert!(!is_session_write("sessions"));
         assert!(!is_session_write("sessions/create"));
+        assert!(!is_session_write("sessions/abc"));
         assert!(!is_session_write("sessions/abc/message"));
+        assert!(!is_session_write("sessions/abc/unknown"));
         assert!(!is_session_write("telemetry/cli-ingest"));
+        assert!(!is_session_write("ingest"));
     }
 
     #[test]

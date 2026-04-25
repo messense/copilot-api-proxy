@@ -179,7 +179,7 @@ Axum Router
 8. **The server enforces a 10 MiB body limit** with `RequestBodyLimitLayer` and enables request tracing with `TraceLayer`.
 9. **Local Amp mode is opt-in and strict**. `--amp-local` enables `src/amp/local.rs` for thread search, markdown export, internal RPCs, telemetry, labels, attachments, durable thread workers, and user info backed by local Amp data. It also serves a local `/news.rss` stub. Any other unsupported Amp fallback route returns a loud `501 Not Implemented` error instead of proxying upstream.
 10. **Amp local web search is pluggable**. `--search-provider` selects `jina`, `tavily`, `brave`, `searxng`, `model`, or `none`; `--search-model` applies when the provider is `model` and defaults to `gpt-5-mini`.
-11. **Droid local mode is opt-in and strict**. `--droid-local` enables `src/droid/local.rs` for `whoami`, managed settings, feature flags, local session index reads, session create/update writes, telemetry, and LLM bookkeeping endpoints. Any other unsupported non-LLM Droid route returns a loud `501 Not Implemented` error instead of proxying upstream.
+11. **Droid local mode is opt-in and strict**. `--droid-local` enables `src/droid/local.rs` for `whoami`, managed settings, feature flags, local session index reads, session create/update writes (including `archive`/`unarchive`/`privacy`/`git-ai/checkpoints`), telemetry, daemon heartbeat, integrations probe, agent readiness reports (empty page), and LLM bookkeeping endpoints. Any other unsupported non-LLM Droid route returns a loud `501 Not Implemented` error instead of proxying upstream. **No Droid path ever falls through to `ampcode.com`** — every top-level `/api/*` segment claimed by `droid::matches_api_path` is owned by the Droid branch in all modes.
 
 ### Module Structure
 
@@ -355,27 +355,40 @@ In all modes, these Droid LLM routes are handled locally:
 - `/api/llm/a/v1/*`
 - `/api/llm/g/v1/generate`
 
+`droid::matches_api_path` claims every top-level `/api/*` segment the Droid CLI is known to call (verified against the `droid` v0.109.1 binary):
+
+- `cli/*`, `feature-flags`, `organization/*`, `sessions/*`, `llm/*`, `telemetry/*`
+- `daemon/*`, `hello`, `ingest`, `otlp/*`, `integrations/*`, `tools/*`, `v0/*`
+
+Anything in this set is owned by the Droid branch and is **never** proxied to `ampcode.com`.
+
 By default, non-LLM Droid routes are proxied to Factory upstream on:
 
-- `/api/cli/*`
-- `/api/organization/*`
-- `/api/sessions/*`
-- `/api/telemetry/*`
-- LLM bookkeeping routes such as `/api/llm/custom/usage` and `/api/llm/failed-requests`
+- `/api/cli/*`, `/api/organization/*`, `/api/sessions/*`, `/api/telemetry/*`
+- `/api/daemon/*`, `/api/hello`, `/api/ingest`, `/api/otlp/*`, `/api/integrations/*`, `/api/tools/*`
+- `/api/v0/computers[...]`, `/api/v0/automations[...]`
+- LLM bookkeeping such as `/api/llm/custom/usage` and `/api/llm/failed-requests`
 
 When `--droid-local` is enabled, a strict local subset is served for:
 
-- `GET /api/cli/whoami`
-- `GET /api/sessions`
-- `GET /api/organization/managed-settings`
-- `GET /api/feature-flags`
+- `GET  /api/cli/whoami`
+- `GET  /api/sessions`
+- `GET  /api/organization/managed-settings`
+- `GET  /api/organization/agent-readiness-reports` (empty page)
+- `GET  /api/feature-flags`
+- `GET  /api/hello`
+- `GET  /api/integrations/org/check`
 - `POST /api/sessions/create`
 - `POST /api/sessions/{id}/update-settings`
 - `POST /api/sessions/{id}/message/create`
 - `POST /api/sessions/{id}/update-title`
 - `POST /api/sessions/{id}/droid-status`
-- `POST /api/telemetry/cli-ingest`
-- `POST /api/telemetry/otlp/traces/ingest`
+- `POST /api/sessions/{id}/archive`, `/unarchive`, `/privacy`, `/git-ai/checkpoints`
+- `POST /api/ingest`, `POST /api/otlp/traces/ingest`
+- `POST /api/daemon/heartbeat`
+- `POST /api/organization/agent-readiness-reports`
+- `POST /api/llm/custom/usage`, `POST /api/llm/failed-requests`
+- `POST /api/telemetry/cli-ingest`, `POST /api/telemetry/otlp/traces/ingest` *(legacy aliases)*
 
 Unsupported non-LLM Droid routes return `501 Not Implemented` instead of proxying upstream under `--droid-local`.
 
