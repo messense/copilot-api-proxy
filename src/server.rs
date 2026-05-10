@@ -41,16 +41,20 @@ impl AppState {
         let amp_management = Arc::new(AmpManagementProxy::new());
         let amp_local_state = if amp_local {
             Some(Arc::new(LocalAmpState::new(
-                search_provider,
+                search_provider.clone(),
                 Arc::clone(&proxy),
-                search_model,
+                search_model.clone(),
             )))
         } else {
             None
         };
         let droid_management = Arc::new(DroidManagementProxy::new());
         let droid_local_state = if droid_local {
-            Some(Arc::new(LocalDroidState::new()))
+            Some(Arc::new(LocalDroidState::new(
+                search_provider,
+                Arc::clone(&proxy),
+                search_model,
+            )))
         } else {
             None
         };

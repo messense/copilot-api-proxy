@@ -1,23 +1,37 @@
 //! Local Droid control-plane handlers used by `--droid-local`.
 
+use crate::proxy::ProxyClient;
+use crate::web_backend::{self, SearchProvider, WebBackend};
 use axum::Json;
 use axum::body::Bytes;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct LocalDroidState {
     user_id: String,
     org_id: String,
     factory_home: PathBuf,
+    web: Box<dyn WebBackend>,
 }
 
 impl LocalDroidState {
-    pub fn new() -> Self {
+    pub fn new(
+        search_provider: SearchProvider,
+        proxy: Arc<ProxyClient>,
+        search_model: Option<String>,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client for local droid");
+        let web = web_backend::create_backend(&search_provider, http, Some(proxy), search_model);
         Self {
             user_id: std::env::var("DROID_LOCAL_USER_ID").unwrap_or_else(|_| "u_local".to_string()),
             org_id: std::env::var("DROID_LOCAL_ORG_ID").unwrap_or_else(|_| "o_local".to_string()),
             factory_home: resolve_factory_home(),
+            web,
         }
     }
 
@@ -71,6 +85,10 @@ pub async fn handle_local_api(
             "orgId": state.org_id
         }))
         .into_response()),
+        (&Method::GET, "cli/org") => Ok(Json(serde_json::json!({
+            "workosOrgIds": []
+        }))
+        .into_response()),
         (&Method::GET, "sessions") => Ok(handle_list_sessions(state)),
         (&Method::GET, "organization/managed-settings") => Ok(Json(serde_json::json!({
             "success": true,
@@ -83,11 +101,27 @@ pub async fn handle_local_api(
         }
         (&Method::GET, "feature-flags") => Ok(Json(state.feature_flags()).into_response()),
         (&Method::GET, "hello") => Ok(Json(serde_json::json!({ "ok": true })).into_response()),
+        (&Method::GET, "billing/limits") => Ok(Json(serde_json::json!({
+            "usesTokenRateLimitsBilling": false
+        }))
+        .into_response()),
+        (&Method::GET, "v0/computers") => {
+            Ok(Json(serde_json::json!({ "computers": [] })).into_response())
+        }
+        (&Method::GET, "v0/automations") => {
+            Ok(Json(serde_json::json!({ "automations": [] })).into_response())
+        }
         (&Method::GET, "integrations/org/check") => Ok(Json(serde_json::json!({
             "installed": {},
             "available": []
         }))
         .into_response()),
+        (&Method::GET, "integrations/slack/channels") => {
+            Ok(Json(serde_json::json!({ "channels": [] })).into_response())
+        }
+        (&Method::GET, "integrations/slack/listening-channels") => {
+            Ok(Json(serde_json::json!({ "listeningChannels": [] })).into_response())
+        }
 
         // ---- Session writes --------------------------------------------
         (&Method::POST, "sessions/create") => Ok(handle_create_session(body)),
@@ -95,9 +129,38 @@ pub async fn handle_local_api(
             Ok(handle_update_title(state, path, body))
         }
         _ if *method == Method::POST && is_session_write(path) => Ok(ok_response()),
+        (&Method::POST, "integrations/slack/listening-channels/enable")
+        | (&Method::PATCH, "integrations/slack/listening-channels/settings") => {
+            Ok(Json(serde_json::json!({ "listeningChannels": [] })).into_response())
+        }
+        (&Method::POST, "organization/subscription/set-overage-preference") => Ok(ok_response()),
+        (&Method::POST, "automations/sync") => Ok(Json(serde_json::json!({
+            "synced": 0,
+            "collisions": []
+        }))
+        .into_response()),
+        _ if *method == Method::POST
+            && path.starts_with("automations/")
+            && path.ends_with("/visual") =>
+        {
+            Ok(ok_response())
+        }
+        (&Method::POST, "bug-reports") => Ok(Json(serde_json::json!({
+            "bugReportId": format!("local-{}", uuid::Uuid::new_v4())
+        }))
+        .into_response()),
+        (&Method::POST, "tools/web-search") => handle_web_search(state, body).await,
+        (&Method::POST, "tools/get-url-contents") => handle_get_url_contents(state, body).await,
+        (&Method::POST, "tools/slack/post-message") => Ok(Json(serde_json::json!({
+            "isError": true,
+            "errorType": "externalAPIError",
+            "llmError": "Slack integration is unavailable in --droid-local",
+            "userError": "Slack integration is unavailable in local mode"
+        }))
+        .into_response()),
 
         // ---- Telemetry / fire-and-forget POSTs -------------------------
-        // Bare paths used by current droid CLI (v0.109.1+) plus historical
+        // Bare paths used by current droid CLI (v0.122.0+) plus historical
         // `/api/telemetry/...` aliases kept for backward compatibility.
         (&Method::POST, "ingest")
         | (&Method::POST, "otlp/traces/ingest")
@@ -146,6 +209,95 @@ fn handle_list_sessions(state: &LocalDroidState) -> Response {
         )
             .into_response(),
     }
+}
+
+async fn handle_web_search(
+    state: &LocalDroidState,
+    body: &Bytes,
+) -> Result<Response, crate::Error> {
+    let value = parse_json_body(body);
+    let query = value
+        .get("query")
+        .or_else(|| value.get("q"))
+        .and_then(|query| query.as_str())
+        .unwrap_or_default()
+        .trim();
+    if query.is_empty() {
+        return Ok(invalid_local_request(
+            "/api/tools/web-search",
+            "missing query in web-search body",
+        ));
+    }
+    let max_results = value
+        .get("maxResults")
+        .or_else(|| value.get("limit"))
+        .and_then(|max_results| max_results.as_u64())
+        .unwrap_or(5) as usize;
+
+    match state.web.search(vec![query.to_string()], max_results).await {
+        Ok(results) => Ok(Json(serde_json::json!({
+            "results": results.into_iter().map(|result| serde_json::json!({
+                "title": result.title,
+                "url": result.url,
+                "summary": result.content
+            })).collect::<Vec<_>>()
+        }))
+        .into_response()),
+        Err(message) => Ok(Json(serde_json::json!({
+            "results": [],
+            "error": { "message": message }
+        }))
+        .into_response()),
+    }
+}
+
+async fn handle_get_url_contents(
+    state: &LocalDroidState,
+    body: &Bytes,
+) -> Result<Response, crate::Error> {
+    let value = parse_json_body(body);
+    let url = value
+        .get("url")
+        .and_then(|url| url.as_str())
+        .unwrap_or_default()
+        .trim();
+    if url.is_empty() {
+        return Ok(invalid_local_request(
+            "/api/tools/get-url-contents",
+            "missing url in get-url-contents body",
+        ));
+    }
+
+    match state.web.extract_page(url.to_string()).await {
+        Ok(page) if !page.full_content.trim().is_empty() => Ok(Json(serde_json::json!({
+            "data": {
+                "markdown": page.full_content,
+                "title": null,
+                "metadata": {
+                    "url": url,
+                    "statusCode": 200,
+                    "error": null,
+                    "title": null
+                },
+                "linkedUrls": []
+            }
+        }))
+        .into_response()),
+        Ok(_) => Ok(Json(serde_json::json!({
+            "error": {
+                "message": "URL content API returned no content in --droid-local"
+            }
+        }))
+        .into_response()),
+        Err(message) => Ok(Json(serde_json::json!({
+            "error": { "message": message }
+        }))
+        .into_response()),
+    }
+}
+
+fn parse_json_body(body: &Bytes) -> serde_json::Value {
+    serde_json::from_slice(body).unwrap_or(serde_json::Value::Null)
 }
 
 fn handle_update_title(state: &LocalDroidState, path: &str, body: &Bytes) -> Response {
@@ -201,6 +353,7 @@ fn is_session_write(path: &str) -> bool {
             | "unarchive"
             | "privacy"
             | "git-ai/checkpoints"
+            | "git-ai/notes"
     )
 }
 
@@ -341,8 +494,12 @@ fn not_implemented(method: &Method, path: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_title_update, extract_title, is_session_write, read_sessions_index};
-    use axum::body::Bytes;
+    use super::{
+        LocalDroidState, apply_title_update, extract_title, handle_local_api, is_session_write,
+        read_sessions_index,
+    };
+    use axum::body::{Bytes, to_bytes};
+    use axum::http::{Method, StatusCode};
     use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
@@ -350,6 +507,34 @@ mod tests {
             "copilot-api-proxy-droid-local-{name}-{}",
             uuid::Uuid::new_v4()
         ))
+    }
+
+    fn test_state() -> LocalDroidState {
+        LocalDroidState {
+            user_id: "u".to_string(),
+            org_id: "o".to_string(),
+            factory_home: temp_path("factory-home"),
+            web: crate::web_backend::create_backend(
+                &crate::web_backend::SearchProvider::None,
+                reqwest::Client::new(),
+                None,
+                None,
+            ),
+        }
+    }
+
+    async fn local_json(method: Method, path: &str) -> serde_json::Value {
+        local_json_with_body(method, path, Bytes::new()).await
+    }
+
+    async fn local_json_with_body(method: Method, path: &str, body: Bytes) -> serde_json::Value {
+        let state = test_state();
+        let response = handle_local_api(&state, &method, path, &body)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[test]
@@ -362,6 +547,7 @@ mod tests {
         assert!(is_session_write("sessions/abc/unarchive"));
         assert!(is_session_write("sessions/abc/privacy"));
         assert!(is_session_write("sessions/abc/git-ai/checkpoints"));
+        assert!(is_session_write("sessions/abc/git-ai/notes"));
     }
 
     #[test]
@@ -373,6 +559,70 @@ mod tests {
         assert!(!is_session_write("sessions/abc/unknown"));
         assert!(!is_session_write("telemetry/cli-ingest"));
         assert!(!is_session_write("ingest"));
+    }
+
+    #[tokio::test]
+    async fn returns_empty_offline_shapes_for_current_droid_routes() {
+        assert_eq!(
+            local_json(Method::GET, "cli/org").await,
+            serde_json::json!({ "workosOrgIds": [] })
+        );
+        assert_eq!(
+            local_json(Method::GET, "billing/limits").await,
+            serde_json::json!({ "usesTokenRateLimitsBilling": false })
+        );
+        assert_eq!(
+            local_json(Method::GET, "v0/computers").await,
+            serde_json::json!({ "computers": [] })
+        );
+        assert_eq!(
+            local_json(Method::GET, "v0/automations").await,
+            serde_json::json!({ "automations": [] })
+        );
+        assert_eq!(
+            local_json(Method::GET, "integrations/slack/channels").await,
+            serde_json::json!({ "channels": [] })
+        );
+        assert_eq!(
+            local_json(Method::GET, "integrations/slack/listening-channels").await,
+            serde_json::json!({ "listeningChannels": [] })
+        );
+        assert_eq!(
+            local_json(Method::POST, "integrations/slack/listening-channels/enable").await,
+            serde_json::json!({ "listeningChannels": [] })
+        );
+        assert_eq!(
+            local_json(
+                Method::PATCH,
+                "integrations/slack/listening-channels/settings"
+            )
+            .await,
+            serde_json::json!({ "listeningChannels": [] })
+        );
+        assert_eq!(
+            local_json(Method::POST, "automations/sync").await,
+            serde_json::json!({ "synced": 0, "collisions": [] })
+        );
+        assert_eq!(
+            local_json_with_body(
+                Method::POST,
+                "tools/web-search",
+                Bytes::from_static(br#"{"query":"rust"}"#)
+            )
+            .await,
+            serde_json::json!({ "results": [] })
+        );
+
+        let fetch_url = local_json_with_body(
+            Method::POST,
+            "tools/get-url-contents",
+            Bytes::from_static(br#"{"url":"https://example.com"}"#),
+        )
+        .await;
+        assert!(fetch_url.get("error").is_some());
+
+        let slack_post = local_json(Method::POST, "tools/slack/post-message").await;
+        assert_eq!(slack_post["isError"], true);
     }
 
     #[test]
@@ -455,6 +705,12 @@ mod tests {
             user_id: "u".to_string(),
             org_id: "o".to_string(),
             factory_home: factory_home.clone(),
+            web: crate::web_backend::create_backend(
+                &crate::web_backend::SearchProvider::None,
+                reqwest::Client::new(),
+                None,
+                None,
+            ),
         };
         apply_title_update(&state, "session-1", "Renamed").unwrap();
 

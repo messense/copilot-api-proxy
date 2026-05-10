@@ -85,26 +85,36 @@ impl DroidManagementProxy {
 /// `--droid-local`). It must NEVER fall through to the Amp branch and hit
 /// `ampcode.com`.
 ///
-/// Inventory verified against the `droid` CLI binary (v0.109.1):
-///   - `cli/whoami`
+/// Inventory verified against the `droid` CLI binary (v0.122.0):
+///   - `cli/whoami`, `cli/org`
 ///   - `feature-flags`
-///   - `organization/managed-settings`, `organization/agent-readiness-reports`
+///   - `organization/managed-settings`, `organization/agent-readiness-reports`,
+///     `organization/subscription/set-overage-preference`
 ///   - `sessions/create`, `sessions/{id}` and its subpaths
 ///     (`update-settings`, `update-title`, `message/create`, `droid-status`,
-///     `archive`, `unarchive`, `privacy`, `git-ai/checkpoints`)
+///     `archive`, `unarchive`, `privacy`, `git-ai/checkpoints`, `git-ai/notes`)
 ///   - `llm/o/v1/*`, `llm/a/v1/*`, `llm/g/v1/generate`,
 ///     `llm/custom/usage`, `llm/failed-requests`
 ///   - `daemon/heartbeat`
 ///   - `hello`
 ///   - `ingest`, `otlp/traces/ingest`         (telemetry; note: NOT under `/api/telemetry/`)
-///   - `integrations/org/check`
+///   - `integrations/org/check`, `integrations/slack/*`
 ///   - `tools/web-search`, `tools/get-url-contents`, `tools/slack/post-message`
 ///   - `v0/computers[...]`, `v0/automations[...]`
+///   - `automations/sync`, `automations/{id}/visual`
+///   - `billing/limits`
+///   - `bug-reports`
+///   - `binary-download-plan`
+///   - `vscode-extension`
 pub fn matches_api_path(path: &str) -> bool {
     let head = path.split('/').next().unwrap_or(path);
     matches!(
         head,
-        "cli"
+        "automations"
+            | "billing"
+            | "binary-download-plan"
+            | "bug-reports"
+            | "cli"
             | "feature-flags"
             | "organization"
             | "sessions"
@@ -117,6 +127,7 @@ pub fn matches_api_path(path: &str) -> bool {
             | "integrations"
             | "tools"
             | "v0"
+            | "vscode-extension"
     )
 }
 
@@ -260,16 +271,21 @@ mod tests {
 
     #[test]
     fn matches_control_plane_paths() {
-        // Confirmed against droid CLI binary v0.109.1.
+        // Confirmed against droid CLI binary v0.122.0.
         assert!(matches_api_path("sessions"));
         assert!(matches_api_path("cli/whoami"));
+        assert!(matches_api_path("cli/org"));
         assert!(matches_api_path("feature-flags"));
         assert!(matches_api_path("organization/managed-settings"));
         assert!(matches_api_path("organization/agent-readiness-reports"));
+        assert!(matches_api_path(
+            "organization/subscription/set-overage-preference"
+        ));
         assert!(matches_api_path("sessions/create"));
         assert!(matches_api_path("sessions/abc"));
         assert!(matches_api_path("sessions/abc/archive"));
         assert!(matches_api_path("sessions/abc/git-ai/checkpoints"));
+        assert!(matches_api_path("sessions/abc/git-ai/notes"));
         assert!(matches_api_path("llm/o/v1/responses"));
         assert!(matches_api_path("llm/a/v1/messages"));
         assert!(matches_api_path("llm/g/v1/generate"));
@@ -280,9 +296,16 @@ mod tests {
         assert!(matches_api_path("ingest"));
         assert!(matches_api_path("otlp/traces/ingest"));
         assert!(matches_api_path("integrations/org/check"));
+        assert!(matches_api_path("integrations/slack/channels"));
         assert!(matches_api_path("tools/web-search"));
         assert!(matches_api_path("v0/computers"));
         assert!(matches_api_path("v0/automations"));
+        assert!(matches_api_path("automations/sync"));
+        assert!(matches_api_path("automations/abc/visual"));
+        assert!(matches_api_path("billing/limits"));
+        assert!(matches_api_path("bug-reports"));
+        assert!(matches_api_path("binary-download-plan"));
+        assert!(matches_api_path("vscode-extension"));
         // Older alias still kept for compatibility.
         assert!(matches_api_path("telemetry/cli-ingest"));
     }
