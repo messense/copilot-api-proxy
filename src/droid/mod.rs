@@ -85,11 +85,12 @@ impl DroidManagementProxy {
 /// `--droid-local`). It must NEVER fall through to the Amp branch and hit
 /// `ampcode.com`.
 ///
-/// Inventory verified against the `droid` CLI binary (v0.122.0):
+/// Inventory verified against the `droid` CLI binary (v0.124.0):
 ///   - `cli/whoami`, `cli/org`
 ///   - `feature-flags`
 ///   - `organization/managed-settings`, `organization/agent-readiness-reports`,
-///     `organization/subscription/set-overage-preference`
+///     `organization/subscription/set-overage-preference`,
+///     `organization/agent-effectiveness/usage`, `organization/members`
 ///   - `sessions/create`, `sessions/{id}` and its subpaths
 ///     (`update-settings`, `update-title`, `message/create`, `droid-status`,
 ///     `archive`, `unarchive`, `privacy`, `git-ai/checkpoints`, `git-ai/notes`)
@@ -98,7 +99,7 @@ impl DroidManagementProxy {
 ///   - `daemon/heartbeat`
 ///   - `hello`
 ///   - `ingest`, `otlp/traces/ingest`         (telemetry; note: NOT under `/api/telemetry/`)
-///   - `integrations/org/check`, `integrations/slack/*`
+///   - `integrations/org/check`, `integrations/scm/repositories`, `integrations/slack/*`
 ///   - `tools/web-search`, `tools/get-url-contents`, `tools/slack/post-message`
 ///   - `v0/computers[...]`, `v0/automations[...]`
 ///   - `automations/sync`, `automations/{id}/visual`
@@ -271,7 +272,7 @@ mod tests {
 
     #[test]
     fn matches_control_plane_paths() {
-        // Confirmed against droid CLI binary v0.122.0.
+        // Confirmed against droid CLI binary v0.124.0.
         assert!(matches_api_path("sessions"));
         assert!(matches_api_path("cli/whoami"));
         assert!(matches_api_path("cli/org"));
@@ -281,6 +282,8 @@ mod tests {
         assert!(matches_api_path(
             "organization/subscription/set-overage-preference"
         ));
+        assert!(matches_api_path("organization/agent-effectiveness/usage"));
+        assert!(matches_api_path("organization/members"));
         assert!(matches_api_path("sessions/create"));
         assert!(matches_api_path("sessions/abc"));
         assert!(matches_api_path("sessions/abc/archive"));
@@ -296,6 +299,7 @@ mod tests {
         assert!(matches_api_path("ingest"));
         assert!(matches_api_path("otlp/traces/ingest"));
         assert!(matches_api_path("integrations/org/check"));
+        assert!(matches_api_path("integrations/scm/repositories"));
         assert!(matches_api_path("integrations/slack/channels"));
         assert!(matches_api_path("tools/web-search"));
         assert!(matches_api_path("v0/computers"));

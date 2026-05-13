@@ -99,6 +99,20 @@ pub async fn handle_local_api(
             // CLI uses `?limit=&startAfter=`. Empty page is sufficient.
             Ok(Json(serde_json::json!({ "reports": [], "hasMore": false })).into_response())
         }
+        (&Method::GET, "organization/agent-effectiveness/usage")
+        | (&Method::POST, "organization/agent-effectiveness/usage") => {
+            Ok(Json(serde_json::json!({
+                "organizationId": state.org_id,
+                "organizationName": "Local Droid",
+                "usage": []
+            }))
+            .into_response())
+        }
+        (&Method::GET, "organization/members") => Ok(Json(serde_json::json!({
+            "members": [],
+            "hasMore": false
+        }))
+        .into_response()),
         (&Method::GET, "feature-flags") => Ok(Json(state.feature_flags()).into_response()),
         (&Method::GET, "hello") => Ok(Json(serde_json::json!({ "ok": true })).into_response()),
         (&Method::GET, "billing/limits") => Ok(Json(serde_json::json!({
@@ -114,6 +128,11 @@ pub async fn handle_local_api(
         (&Method::GET, "integrations/org/check") => Ok(Json(serde_json::json!({
             "installed": {},
             "available": []
+        }))
+        .into_response()),
+        (&Method::GET, "integrations/scm/repositories") => Ok(Json(serde_json::json!({
+            "repositories": [],
+            "hasMore": false
         }))
         .into_response()),
         (&Method::GET, "integrations/slack/channels") => {
@@ -572,6 +591,26 @@ mod tests {
             serde_json::json!({ "usesTokenRateLimitsBilling": false })
         );
         assert_eq!(
+            local_json(Method::GET, "organization/agent-effectiveness/usage").await,
+            serde_json::json!({
+                "organizationId": "o",
+                "organizationName": "Local Droid",
+                "usage": []
+            })
+        );
+        assert_eq!(
+            local_json(Method::POST, "organization/agent-effectiveness/usage").await,
+            serde_json::json!({
+                "organizationId": "o",
+                "organizationName": "Local Droid",
+                "usage": []
+            })
+        );
+        assert_eq!(
+            local_json(Method::GET, "organization/members").await,
+            serde_json::json!({ "members": [], "hasMore": false })
+        );
+        assert_eq!(
             local_json(Method::GET, "v0/computers").await,
             serde_json::json!({ "computers": [] })
         );
@@ -582,6 +621,10 @@ mod tests {
         assert_eq!(
             local_json(Method::GET, "integrations/slack/channels").await,
             serde_json::json!({ "channels": [] })
+        );
+        assert_eq!(
+            local_json(Method::GET, "integrations/scm/repositories").await,
+            serde_json::json!({ "repositories": [], "hasMore": false })
         );
         assert_eq!(
             local_json(Method::GET, "integrations/slack/listening-channels").await,
