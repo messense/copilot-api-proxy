@@ -96,8 +96,14 @@ pub async fn handle_local_api(
         }))
         .into_response()),
         (&Method::GET, "organization/agent-readiness-reports") => {
-            // CLI uses `?limit=&startAfter=`. Empty page is sufficient.
-            Ok(Json(serde_json::json!({ "reports": [], "hasMore": false })).into_response())
+            // CLI uses `?limit=&startAfter=` and v0.127 switched to
+            // URLSearchParams. Empty page is sufficient for local mode.
+            Ok(Json(serde_json::json!({
+                "reports": [],
+                "hasMore": false,
+                "nextStartAfter": null
+            }))
+            .into_response())
         }
         (&Method::GET, "organization/agent-effectiveness/usage")
         | (&Method::POST, "organization/agent-effectiveness/usage") => {
@@ -373,6 +379,7 @@ fn is_session_write(path: &str) -> bool {
             | "privacy"
             | "git-ai/checkpoints"
             | "git-ai/notes"
+            | "git-ai/pull-requests"
     )
 }
 
@@ -567,6 +574,7 @@ mod tests {
         assert!(is_session_write("sessions/abc/privacy"));
         assert!(is_session_write("sessions/abc/git-ai/checkpoints"));
         assert!(is_session_write("sessions/abc/git-ai/notes"));
+        assert!(is_session_write("sessions/abc/git-ai/pull-requests"));
     }
 
     #[test]
@@ -589,6 +597,14 @@ mod tests {
         assert_eq!(
             local_json(Method::GET, "billing/limits").await,
             serde_json::json!({ "usesTokenRateLimitsBilling": false })
+        );
+        assert_eq!(
+            local_json(Method::GET, "organization/agent-readiness-reports").await,
+            serde_json::json!({
+                "reports": [],
+                "hasMore": false,
+                "nextStartAfter": null
+            })
         );
         assert_eq!(
             local_json(Method::GET, "organization/agent-effectiveness/usage").await,
@@ -666,6 +682,11 @@ mod tests {
 
         let slack_post = local_json(Method::POST, "tools/slack/post-message").await;
         assert_eq!(slack_post["isError"], true);
+
+        assert_eq!(
+            local_json(Method::POST, "sessions/abc/git-ai/pull-requests").await,
+            serde_json::json!({ "ok": true })
+        );
     }
 
     #[test]

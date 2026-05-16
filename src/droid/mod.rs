@@ -85,7 +85,7 @@ impl DroidManagementProxy {
 /// `--droid-local`). It must NEVER fall through to the Amp branch and hit
 /// `ampcode.com`.
 ///
-/// Inventory verified against the `droid` CLI binary (v0.124.0):
+/// Inventory verified against the `droid` CLI binary (v0.127.0):
 ///   - `cli/whoami`, `cli/org`
 ///   - `feature-flags`
 ///   - `organization/managed-settings`, `organization/agent-readiness-reports`,
@@ -93,7 +93,8 @@ impl DroidManagementProxy {
 ///     `organization/agent-effectiveness/usage`, `organization/members`
 ///   - `sessions/create`, `sessions/{id}` and its subpaths
 ///     (`update-settings`, `update-title`, `message/create`, `droid-status`,
-///     `archive`, `unarchive`, `privacy`, `git-ai/checkpoints`, `git-ai/notes`)
+///     `archive`, `unarchive`, `privacy`, `git-ai/checkpoints`, `git-ai/notes`,
+///     `git-ai/pull-requests`)
 ///   - `llm/o/v1/*`, `llm/a/v1/*`, `llm/g/v1/generate`,
 ///     `llm/custom/usage`, `llm/failed-requests`
 ///   - `daemon/heartbeat`
@@ -272,7 +273,7 @@ mod tests {
 
     #[test]
     fn matches_control_plane_paths() {
-        // Confirmed against droid CLI binary v0.124.0.
+        // Confirmed against droid CLI binary v0.127.0.
         assert!(matches_api_path("sessions"));
         assert!(matches_api_path("cli/whoami"));
         assert!(matches_api_path("cli/org"));
@@ -289,6 +290,7 @@ mod tests {
         assert!(matches_api_path("sessions/abc/archive"));
         assert!(matches_api_path("sessions/abc/git-ai/checkpoints"));
         assert!(matches_api_path("sessions/abc/git-ai/notes"));
+        assert!(matches_api_path("sessions/abc/git-ai/pull-requests"));
         assert!(matches_api_path("llm/o/v1/responses"));
         assert!(matches_api_path("llm/a/v1/messages"));
         assert!(matches_api_path("llm/g/v1/generate"));
