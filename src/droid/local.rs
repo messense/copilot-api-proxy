@@ -38,7 +38,9 @@ impl LocalDroidState {
     pub fn feature_flags(&self) -> serde_json::Value {
         serde_json::json!({
             "orgId": self.org_id,
-            "flags": {},
+            "flags": {
+                "mission_ui_entrypoints": true
+            },
             "configs": {
                 "cli_default_settings": {
                     "enabledPlugins": {},
@@ -122,7 +124,17 @@ pub async fn handle_local_api(
         (&Method::GET, "feature-flags") => Ok(Json(state.feature_flags()).into_response()),
         (&Method::GET, "hello") => Ok(Json(serde_json::json!({ "ok": true })).into_response()),
         (&Method::GET, "billing/limits") => Ok(Json(serde_json::json!({
-            "usesTokenRateLimitsBilling": false
+            "usesTokenRateLimitsBilling": true,
+            "overagePreference": "extraUsage",
+            "extraUsageAllowed": true,
+            "extraUsageBalanceCents": 0,
+            "limits": {
+                "standard": {
+                    "fiveHour": { "usedPercent": 0 },
+                    "weekly": { "usedPercent": 0 },
+                    "monthly": { "usedPercent": 0 }
+                }
+            }
         }))
         .into_response()),
         (&Method::GET, "v0/computers") => {
@@ -594,10 +606,15 @@ mod tests {
             local_json(Method::GET, "cli/org").await,
             serde_json::json!({ "workosOrgIds": [] })
         );
+        let billing_limits = local_json(Method::GET, "billing/limits").await;
+        assert_eq!(billing_limits["usesTokenRateLimitsBilling"], true);
+        assert_eq!(billing_limits["overagePreference"], "extraUsage");
         assert_eq!(
-            local_json(Method::GET, "billing/limits").await,
-            serde_json::json!({ "usesTokenRateLimitsBilling": false })
+            billing_limits["limits"]["standard"]["fiveHour"]["usedPercent"],
+            0
         );
+        let feature_flags = local_json(Method::GET, "feature-flags").await;
+        assert_eq!(feature_flags["flags"]["mission_ui_entrypoints"], true);
         assert_eq!(
             local_json(Method::GET, "organization/agent-readiness-reports").await,
             serde_json::json!({
