@@ -548,7 +548,9 @@ async fn handle_thread_markdown(
         .map(|q| q.contains("truncate_tool_results=1"))
         .unwrap_or(false);
 
-    let path = state.threads_dir.join(format!("{}.json", id));
+    let Some(path) = safe_thread_path(&state.threads_dir, id) else {
+        return Ok((StatusCode::BAD_REQUEST, "invalid thread id").into_response());
+    };
     let data = match tokio::fs::read(&path).await {
         Ok(d) => d,
         Err(_) => {
@@ -1046,7 +1048,13 @@ async fn handle_get_thread(
         .into_response());
     };
 
-    let path = state.threads_dir.join(format!("{}.json", id));
+    let Some(path) = safe_thread_path(&state.threads_dir, &id) else {
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "error": { "code": "invalid-request", "message": "invalid thread id" }
+        }))
+        .into_response());
+    };
     match tokio::fs::read(&path).await {
         Ok(data) => {
             // Amp expects: result.thread.data
@@ -1194,6 +1202,13 @@ async fn handle_upload_thread(
         )
             .into_response());
     }
+    let Some(path) = safe_thread_path(&state.threads_dir, thread_id) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "invalid thread id"}})),
+        )
+            .into_response());
+    };
 
     // Skip persisting threads with no messages (empty stubs)
     let has_messages = thread_value
@@ -1216,7 +1231,6 @@ async fn handle_upload_thread(
             .into_response());
     }
 
-    let path = state.threads_dir.join(format!("{}.json", thread_id));
     let data = serde_json::to_vec(thread_value).unwrap_or_default();
     if let Err(e) = tokio::fs::write(&path, &data).await {
         tracing::error!(thread_id = %thread_id, error = %e, "Failed to write thread file");
@@ -1267,7 +1281,13 @@ async fn handle_set_thread_meta(
         }
     };
 
-    let path = state.threads_dir.join(format!("{}.json", thread_id));
+    let Some(path) = safe_thread_path(&state.threads_dir, thread_id) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "invalid thread id"}})),
+        )
+            .into_response());
+    };
     let data = match tokio::fs::read(&path).await {
         Ok(d) => d,
         Err(_) => {
@@ -1346,7 +1366,13 @@ async fn handle_archive_thread(
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
-    let path = state.threads_dir.join(format!("{}.json", thread_id));
+    let Some(path) = safe_thread_path(&state.threads_dir, thread_id) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "invalid thread id"}})),
+        )
+            .into_response());
+    };
     let data = match tokio::fs::read(&path).await {
         Ok(d) => d,
         Err(_) => {
@@ -1415,7 +1441,13 @@ async fn handle_delete_thread(
             .into_response());
     }
 
-    let path = state.threads_dir.join(format!("{}.json", thread_id));
+    let Some(path) = safe_thread_path(&state.threads_dir, thread_id) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": {"code": "invalid-request", "message": "invalid thread id"}})),
+        )
+            .into_response());
+    };
     match tokio::fs::remove_file(&path).await {
         Ok(()) => {
             tracing::debug!(thread_id = %thread_id, "Deleted thread from disk");
@@ -1496,6 +1528,22 @@ async fn handle_add_thread_labels(body: &Bytes) -> Result<Response, crate::Error
         write_local_labels(id, &all).await;
     }
     ok_null()
+}
+
+/// Build a safe on-disk path for a thread file, rejecting any `thread_id`
+/// that could escape `threads_dir` via path traversal (e.g. `..`, `/`, `\`,
+/// or an absolute path). Returns `None` if `thread_id` is empty or unsafe.
+fn safe_thread_path(threads_dir: &Path, thread_id: &str) -> Option<PathBuf> {
+    if thread_id.is_empty()
+        || thread_id.contains('/')
+        || thread_id.contains('\\')
+        || thread_id == "."
+        || thread_id == ".."
+        || Path::new(thread_id).is_absolute()
+    {
+        return None;
+    }
+    Some(threads_dir.join(format!("{}.json", thread_id)))
 }
 
 /// Extract a thread ID from a JSON body (checks `params.thread` and `thread`).
